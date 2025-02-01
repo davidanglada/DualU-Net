@@ -6,18 +6,6 @@ Accurate detection and classification of cell nuclei in histopathological images
 
 ---
 
-## Paper
-
-The full details of DualU-Net—including architecture diagrams, experimental evaluations, and ablation studies—are described in our paper. Key highlights:
-
-- **Joint Learning**: We simultaneously optimize segmentation and centroid heatmap predictions, ensuring each task benefits from shared feature representations.
-- **Panoptic-Style Evaluation**: We measure not only standard segmentation metrics (like Dice) but also centroid-based detection and panoptic quality (PQ).
-- **Scalability**: DualU-Net can handle varying input resolutions and multiple cell types/classes.
-
-If you use this repository, please cite our paper once it is officially published.
-
----
-
 ## Installation
 
 1. **Clone** this repository:
@@ -56,6 +44,21 @@ python eval.py --config configs/eval_config.yaml
 - Evaluates segmentation and centroid localization performance using the relevant metrics (Dice, MSE, F1-detection, Panoptic Quality, etc.).
 - The `checkpoint.pth` should be a trained DualU-Net model.
 
-## License
+## Citation
+If you find this work helpful in your research, please consider citing us:
+```bash
+   @inproceedings{
+      anglada-rotger2025dualunet,
+      title={DualU-Net: A Fast and Lightweight Fully Convolutional Architecture for Nuclei Instance Segmentation},
+      author={David Anglada-Rotger and Berta Jansat and Ferran Marques and Montse Pard{\`a}s},
+      booktitle={Submitted to Medical Imaging with Deep Learning},
+      year={2025},
+      url={https://openreview.net/forum?id=lK0CklgxQd},
+      note={under review}
+   }
+```
 
-This work is released under the MIT License. See the license file for more information on permitted use and distribution.
+## License
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+This project is licensed under the [MIT License](LICENSE).
