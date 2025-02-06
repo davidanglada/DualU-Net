@@ -13,43 +13,61 @@ Accurate detection and classification of cell nuclei in histopathological images
    git clone https://github.com/davidanglada/DualU-Net.git
    ```
 
-2. **Install required dependencies**:
+2. **Create a virtual environment**:
+   ```bash
+   python -m venv dualunet-env
+   source dualunet-env/bin/activate  # On Windows use `dualunet-env\Scripts\activate`
+   ```
+
+3. **Install required dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
-
-3. *(Optional)* For GPU training, ensure you have CUDA drivers installed and have a compatible PyTorch build.
 
 ---
 
 ## Basic Usage
 
-Below are the basic commands to get you started with DualU-Net. Keep in mind that the codebase and interfaces may change rapidly while we finalize features.
+### 1. Project Structure
 
-### 1. Training
+```
+DualU-Net/
+├── dual_unet/                         # Main module containing core functionalities
+│   ├── datasets/                      # Dataset building from COCO, transforms and augmentation
+│   ├── eval/                          # Detection and segmentation evaluation functions.
+│   ├── models/                        # Contains model architectures and related utilities
+│   ├── utils/                         # Contains utility functions
+│   ├── __init__.py                    # Initialization file for the dual_unet module
+│   └── engine.py                      # Train and evaluation functions
+├── configs/                           # Configuration files
+│   ├── train_config.yaml              # Configuration file for training
+│   ├── eval_config.yaml               # Configuration file for evaluation
+├── eval.py                            # Script for evaluating the model
+├── train.py                           # Script for training the model
+├── requirements.txt                   # List of required Python packages
+└── README.md                          # Project documentation
+```
+
+Below are the basic commands to get you started with DualU-Net.
+
+### 2. Training
 
 ```bash
 python train.py --config configs/train_config.yaml
 ```
 
-- Configure hyperparameters (learning rate, batch size, etc.) in the `configs/train_config.yaml`.
-- Optionally specify the dataset paths and GPU devices via command-line flags or config entries.
-
-### 2. Evaluation
+### 3. Inference & Evaluation
 
 ```bash
 python eval.py --config configs/eval_config.yaml
 ```
-
-- Evaluates segmentation and centroid localization performance using the relevant metrics (Dice, MSE, F1-detection, Panoptic Quality, etc.).
-- The `checkpoint.pth` should be a trained DualU-Net model.
 
 ## Citation
 If you find this work helpful in your research, please consider citing us:
 ```bash
    @inproceedings{
       anglada-rotger2025dualunet,
-      title={DualU-Net: A Fast and Lightweight Fully Convolutional Architecture for Nuclei Instance Segmentation},
+      title={Two Heads Are Enough: DualU-Net, a Fast and Efficient Architecture for Nuclei Instance Segmentation},
       author={David Anglada-Rotger and Berta Jansat and Ferran Marques and Montse Pard{\`a}s},
       booktitle={Submitted to Medical Imaging with Deep Learning},
       year={2025},

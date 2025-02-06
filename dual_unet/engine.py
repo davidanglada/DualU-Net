@@ -67,6 +67,7 @@ def train_one_epoch(
             thresholds=thresholds,
             max_pair_distance=max_pair_distance,
             class_names=data_loader.dataset.class_names,
+            dataset = cfg['dataset']['train']['name'],
             train=True
         )
     }
@@ -124,6 +125,7 @@ def train_one_epoch(
 
 @torch.no_grad()
 def evaluate(
+    cfg: Dict[str, Any],
     model: torch.nn.Module,
     criterion: torch.nn.Module,
     data_loader: Iterable,
@@ -158,6 +160,7 @@ def evaluate(
             thresholds=thresholds,
             max_pair_distance=max_pair_distance,
             class_names=data_loader.dataset.class_names,
+            dataset = cfg['dataset']['val']['name'],
             train=True,
             th=th
         )
@@ -190,6 +193,7 @@ def evaluate(
 
 @torch.no_grad()
 def evaluate_test(
+    cfg: Dict[str, Any],
     model: torch.nn.Module,
     criterion: torch.nn.Module,
     data_loader: Iterable,
@@ -228,6 +232,7 @@ def evaluate_test(
             thresholds=thresholds,
             max_pair_distance=max_pair_distance,
             class_names=data_loader.dataset.class_names,
+            dataset = cfg['dataset']['test']['name'],
             train=train,
             th=th,
             output_sufix=output_sufix

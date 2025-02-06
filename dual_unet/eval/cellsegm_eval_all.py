@@ -9,6 +9,7 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 import os.path as osp
+import os
 import torchvision.transforms.v2 as v2
 
 import scipy
@@ -267,6 +268,7 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
     def __init__(
         self,
         num_classes: int,
+        dataset: str,
         thresholds: Union[int, List[int]],
         class_names: Optional[List[str]] = None,
         max_pair_distance: float = 12,
@@ -280,6 +282,7 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
         self.th = th
         self.output_sufix = output_sufix if output_sufix is not None \
             else datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        self.dataset = dataset
 
     def _get_values(self):
         """
@@ -497,7 +500,8 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
                     detection_f1=0.0,   # If you want per-image detection F1
                     class_f1_scores={},
                     filename_prefix=f"sample_{i}",
-                    output_sufix=self.output_sufix
+                    output_sufix=self.output_sufix,
+                    dataset=self.dataset
                 )
 
         # Flatten detection
@@ -735,39 +739,128 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
         dataset: str = "pannuke"
     ) -> None:
         """
-        Example method to save debug visualizations. Modify path/logic as needed.
-        """
-        if isinstance(image, torch.Tensor):
-            image = image.permute(1, 2, 0).cpu().numpy()
+        Save debug visualizations including original image, ground truth mask, watershed mask,
+        Gaussian maps, and various metric info. Color mappings and legends are set based on the dataset.
 
+        Args:
+            image (np.ndarray or torch.Tensor): Input image.
+            gt_mask (np.ndarray): Ground truth mask (e.g., one-hot or probability map).
+            segmentation_mask (np.ndarray): Predicted segmentation mask (not used for display here).
+            true_centroids_list (np.ndarray): True centroid coordinates.
+            pred_centroids_list (np.ndarray): Predicted centroid coordinates.
+            w_centroids_list (np.ndarray): Additional centroid data.
+            classification_mask (np.ndarray): Classification mask.
+            watershed_mask (np.ndarray): Watershed segmentation mask to be displayed as the prediction.
+            true_gaussian (np.ndarray): Ground truth Gaussian centroid map.
+            pred_gaussian (np.ndarray): Predicted Gaussian centroid map.
+            cells_mask (np.ndarray): Binary mask of cell regions.
+            true_labels (np.ndarray): True labels for instances.
+            pred_labels (np.ndarray): Predicted labels for instances.
+            mse (float): MSE metric value.
+            hn_dice (float): HN Dice metric value.
+            detection_f1 (float): Detection F1 metric value.
+            class_f1_scores (Dict[str, float]): Dictionary of class-wise F1 scores.
+            filename_prefix (str): Prefix for the output filename.
+            output_sufix (str): Suffix for the output filename.
+            dataset (str): Dataset flag ("consep", "ki67", "pannuke") to determine color mapping.
+        """
+        import matplotlib.pyplot as plt
+
+        # Set color maps and legend elements based on dataset
+        if dataset == "consep":
+            class_colors = [
+                [0, 0, 0],       # Background: Black
+                [255, 0, 0],     # Miscellaneous: Red
+                [0, 255, 0],     # Inflammatory: Green
+                [0, 0, 255],     # Epithelial: Blue
+                [255, 255, 0]    # Spindleshaped: Yellow
+            ]
+            legend_elements = [
+                plt.Line2D([0], [0], marker='o', color='w', label='Miscellaneous', markerfacecolor='r', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Inflammatory', markerfacecolor='g', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Epithelial', markerfacecolor='b', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Spindleshaped', markerfacecolor='y', markersize=10)
+            ]
+        elif dataset == "ki67":
+            class_colors = [
+                [0, 0, 0],       # Background: Black
+                [255, 0, 0],     # Class 1: Red
+                [0, 255, 0],     # Class 2: Green
+                [0, 0, 255]      # Class 3: Blue
+            ]
+            legend_elements = [
+                plt.Line2D([0], [0], marker='o', color='w', label='Class1', markerfacecolor='r', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Class2', markerfacecolor='g', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Class3', markerfacecolor='b', markersize=10)
+            ]
+        elif dataset == "pannuke":
+            class_colors = [
+                [0, 0, 0],       # Background: Black
+                [255, 0, 0],     # Neoplastic: Red
+                [0, 255, 0],     # Inflammatory: Green
+                [255, 255, 0],   # Connective: Yellow
+                [255, 255, 255], # Necrosis: White
+                [0, 0, 255]      # Epithelial: Blue
+            ]
+            legend_elements = [
+                plt.Line2D([0], [0], marker='o', color='w', label='Neoplastic', markerfacecolor='r', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Inflammatory', markerfacecolor='g', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Connective', markerfacecolor='y', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Necrosis', markerfacecolor='w', markersize=10),
+                plt.Line2D([0], [0], marker='o', color='w', label='Epithelial', markerfacecolor='b', markersize=10)
+            ]
+        else:
+            class_colors = None
+            legend_elements = None
+
+        # Convert image to numpy array if it's a torch.Tensor.
+        if isinstance(image, torch.Tensor):
+            image = image.permute(2, 0, 1).cpu().numpy()
         image = np.clip(image, 0, 1)
 
-        # Show a few subplots
+        # Use watershed_mask (instead of segmentation_mask) for predicted segmentation visualization.
+        gt_labels = np.argmax(gt_mask, axis=0)
+        pred_labels = watershed_mask
+
+        if class_colors is not None:
+            gt_color = np.zeros((gt_labels.shape[0], gt_labels.shape[1], 3), dtype=np.uint8)
+            pred_color = np.zeros((pred_labels.shape[0], pred_labels.shape[1], 3), dtype=np.uint8)
+            for cls in range(len(class_colors)):
+                gt_color[gt_labels == cls] = class_colors[cls]
+                pred_color[pred_labels == cls] = class_colors[cls]
+        else:
+            gt_color = gt_labels
+            pred_color = pred_labels
+
         fig, axs = plt.subplots(2, 3, figsize=(15, 10))
         axs[0, 0].imshow(image)
         axs[0, 0].set_title("Original Image")
 
-        axs[0, 1].imshow(np.argmax(gt_mask, axis=0))
-        axs[0, 1].set_title("GT Mask (Argmax)")
+        axs[0, 1].imshow(gt_color)
+        axs[0, 1].set_title("GT Mask (Colored)")
+        if legend_elements is not None:
+            axs[0, 1].legend(handles=legend_elements, loc="upper right")
 
-        axs[0, 2].imshow(np.argmax(segmentation_mask, axis=0))
-        axs[0, 2].set_title("Pred Mask (Argmax)")
+        # Show watershed mask as predicted segmentation
+        axs[0, 2].imshow(pred_color)
+        axs[0, 2].set_title("Watershed Mask (Colored)")
 
-        axs[1, 0].imshow(true_gaussian, cmap='jet')
+        axs[1, 0].imshow(true_gaussian, cmap="jet")
         axs[1, 0].set_title("True Gaussian")
 
-        axs[1, 1].imshow(pred_gaussian, cmap='jet')
+        axs[1, 1].imshow(pred_gaussian, cmap="jet")
         axs[1, 1].set_title("Pred Gaussian")
 
         info_text = f"MSE={mse:.3f}\nHN_DICE={hn_dice:.3f}\nDetF1={detection_f1:.3f}"
         axs[1, 2].text(0.1, 0.5, info_text, fontsize=12)
-        axs[1, 2].axis('off')
+        axs[1, 2].axis("off")
 
         plt.suptitle(f"{filename_prefix} | {output_sufix}")
         plt.tight_layout()
         save_dir = "./final_outputs"
         os.makedirs(save_dir, exist_ok=True)
-        save_path = f"{save_dir}/{filename_prefix}_{output_sufix}.png"
+        save_path = osp.join(save_dir, f"{filename_prefix}_{output_sufix}.png")
         plt.savefig(save_path, dpi=150)
         plt.close()
         print(f"Visualization saved to {save_path}")
+

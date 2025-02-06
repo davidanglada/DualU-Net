@@ -4,6 +4,7 @@ from typing import Dict, Any
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 from collections import OrderedDict
 
@@ -12,7 +13,7 @@ sys.path.append('../dual_unet')
 from dual_unet.utils.distributed import init_distributed_mode, get_rank, is_main_process
 from dual_unet.utils.misc import seed_everything
 from dual_unet.utils.config import load_config
-from dual_unet.datasets import build_dataset, build_loader
+from dual_unet.datasets import build_dataset, build_loader, compute_class_weights_no_background, compute_class_weights_with_background
 from dual_unet.models import build_model
 from dual_unet.engine import evaluate_test
 from dual_unet.models.losses import DualLoss_combined
@@ -49,10 +50,22 @@ def test(cfg: Dict[str, Any]) -> Dict[str, float]:
     test_dataset = build_dataset(cfg, split='test')
     test_loader = build_loader(cfg, test_dataset, split='test')
 
+    #check if the file exists
+    if not osp.exists(cfg['training']['ce_weights']):
+        print("Computing class weights...")
+        ce_weights = compute_class_weights_with_background(train_dataset, cfg['dataset']['train']['num_classes'], background_importance_factor=10).to(device)
+        # Save weights
+        np.save(cfg['training']['ce_weights'], ce_weights.cpu().numpy())
+        print(f"Class weights saved to {cfg['training']['ce_weights']}")
+    else:
+        print("Loading class weights from file...")
+        ce_weights = torch.tensor(np.load(cfg['training']['ce_weights'])).to(device)
+
     # Build model and criterion
+    print("Building model and criterion...")
     model = build_model(cfg)
     criterion = DualLoss_combined(
-        ce_weights=compute_class_weights_with_background(test_dataset),
+        ce_weights=ce_weights,
         weight_dice=cfg['training']['weight_dice'],
         weight_dice_b=cfg['training']['weight_dice_b'],
         weight_ce=cfg['training']['weight_ce'],
@@ -76,7 +89,7 @@ def test(cfg: Dict[str, Any]) -> Dict[str, float]:
 
     # Evaluate
     test_stats = evaluate_test(
-        model, criterion, test_loader, device,
+        cfg, model, criterion, test_loader, device,
         thresholds=cfg['evaluation']['thresholds'],
         max_pair_distance=cfg['evaluation']['max_pair_distance'],
         output_sufix=cfg['experiment']['name']

@@ -1,16 +1,14 @@
-from .mtunet import MTUnet, MTUnet_ConvNext
-from .losses import DualLoss, DualLoss_CE, DualLoss_w, DualLoss_combined
+from .mtunet import DualUNet, DualUNetConvNext
+from .losses import DualLoss_combined
 
 def build_model(config):
     """Initialize the MTUnet model based on the config file."""
 
     if "convnext" in config["model"]["encoder_name"]:
-        model = MTUnet_ConvNext(
+        model = DualUNetConvNext(
             encoder_name=config["model"]["encoder_name"],
             classes_s=config["model"]["classes_s"]+1,  # Segmentation classes
-            classes_c=1,  # Centroid regression classes
-            activation_s= None,#config["model"]["activation_s"],  # Sigmoid activation for segmentation
-            activation_c=config["model"].get("activation_c", None),  # No activation for centroid regression
+            classes_c=1,
             encoder_weights=config["model"]["encoder_weights"],
             decoder_channels=config["model"]["decoder_channels"],
             decoder_use_batchnorm=config["model"]["decoder_use_batchnorm"],
@@ -22,12 +20,10 @@ def build_model(config):
 
     else:
 
-        model = MTUnet(
+        model = DualUNet(
             encoder_name=config["model"]["encoder_name"],
             classes_s=config["model"]["classes_s"]+1,  # Segmentation classes
             classes_c=1,  # Centroid regression classes
-            activation_s= None,#config["model"]["activation_s"],  # Sigmoid activation for segmentation
-            activation_c=config["model"].get("activation_c", None),  # No activation for centroid regression
             encoder_weights=config["model"]["encoder_weights"],
             decoder_channels=config["model"]["decoder_channels"],
             decoder_use_batchnorm=config["model"]["decoder_use_batchnorm"],

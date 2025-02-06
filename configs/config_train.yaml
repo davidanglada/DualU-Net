@@ -23,10 +23,14 @@ loader:
     drop_last: False
 
 optimizer:
-  lr: 0.0001
+  lr_base: 0.0002
   epochs: 100
   weight_decay: 0.0001
-  max_norm: 0.1
+  lr_drop_steps:
+    - 70
+    - 90
+  lr_drop_factor: 0.1
+  lr_auto_scale: True
 
 distributed: True
 
@@ -39,6 +43,17 @@ training:
   sigma: 5
   th: 0.15
 
+transforms:
+  normalize:
+    mean: [0.485, 0.456, 0.406]
+    std: [0.229, 0.224, 0.225]
+  augmentations:
+    - name: "hflip"
+      p: 0.5
+    - name: "vflip"
+      p: 0.5
+    - name: "rotate90"
+
 model:
   encoder_name: resnext50_32x4d 
   classes_s: 4                   
@@ -50,7 +65,7 @@ model:
 evaluation:
   thresholds: [0.5]
   max_pair_distance: 12
-  interval: 10   
+  interval: 1
 
 experiment:
   wandb: True
@@ -58,6 +73,6 @@ experiment:
   name: "checkpoint.pth" 
   wandb_group: "train"
   seed: 42
-  output_dir: /path/to/output_dir 
+  output_dir: ./
   output_name: "checkpoint.pth" 
   resume: False
