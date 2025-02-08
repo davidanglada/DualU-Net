@@ -1,10 +1,64 @@
 # Two Heads Are Enough: DualU-Net, a Fast and Efficient Architecture for Cell Classification and Segmentation (Under Construction)
 
-Accurate detection and classification of cell nuclei in histopathological images are critical for both clinical diagnostics and large-scale digital pathology workflows. In this work, we introduce DualU-Net, a fully convolutional, multi-task architecture designed to streamline nuclei classification and segmentation. Unlike the widely adopted three-decoder paradigm of HoVer-Net, DualU-Net employs only two output heads: a segmentation decoder that predicts pixel-wise classification maps and a detection decoder that estimates Gaussian-based centroid density maps. By leveraging these two outputs, our model effectively reconstructs instance-level segmentations. The proposed architecture results in significantly faster inference, reducing processing time by up to x5 compared to HoVer-Net, while achieving classification and detection performance comparable to State-of-the-Art models. Additionally, our approach demonstrates greater computational efficiency than CellViT and NuLite. We further show that DualU-Net is more robust to staining variations, a common challenge in digital pathology workflows. The model has been successfully deployed in clinical settings as part of the DigiPatICS initiative, operating across eight hospitals within the Institut Català de la Salut (ICS) network, highlighting the practical viability of DualU-Net as an efficient and scalable solution for nuclei segmentation and classification in real-world pathology applications.
+DualU-Net is a multi-task deep learning model for nuclei segmentation and classification. It employs a dual-decoder design that predicts both pixel-wise segmentation maps and Gaussian-based centroid density maps, enabling fast and accurate instance segmentation in histopathological images.
+
+![DualU-Net Architecture](docs/esquema_ex.jpg)
 
 > **Note**: This repository is under active development. Please anticipate frequent changes.
 
----
+## Datasets
+
+DualU-Net has been evaluated on several public datasets:
+
+- **PanNuke**: A dataset for tissue and nuclei segmentation in histopathology.  
+  [Link](https://arxiv.org/abs/2003.10778)
+- **CoNSeP**: A colorectal cancer nuclei segmentation dataset.  
+  [Link](https://github.com/vqdang/hover_net)
+
+## Results and Checkpoints
+
+| Dataset  | Encoder              | Detection F1 | Classification F1 | Dice  | Checkpoint Link |
+|----------|----------------------|-------------|------------------|-------|----------------|
+| CoNSeP   | ResNeXt50_32x4d      | 0.72        | 0.56             | 0.76  | [Download] (https://drive.google.com/file/d/1v10hZvHK51V2u7QdqW5cU_EiLZ8KsvAv/view?usp=sharing) |                                   
+| CoNSeP   | ConvNeXt_base        | 0.72        | 0.54             | 0.80  | [Download] (https://drive.google.com/file/d/13KhPec60ctwBr7C-XjR1ah6H7cD800Q9/view?usp=sharing) |                                  
+| PanNuke  | ResNeXt50_32x4d      | 0.80        | 0.54             | 0.77  | [Download] (https://drive.google.com/drive/folders/1vnAJgmoaRf0I2C9HVWl-vM4ClsMAhH9T?usp=drive_link) |                                  
+| PanNuke  | ConvNeXt_base        | 0.80        | 0.55             | 0.74  | [Download] (https://drive.google.com/drive/folders/1shCvv29LDLxHygALOMqUIpfjIEAaaBhz?usp=sharing) |
+
+
+### PanNuke Checkpoints Information
+
+The provided **PanNuke** checkpoints are trained on one fold of the dataset, validated on another, and tested on the third. The naming convention of the checkpoints follows this pattern:
+
+**`pannuke-combined-{encoder}-{train_fold}{val_fold}.pth`**
+
+- **`{encoder}`**: Specifies the encoder used in the model (e.g., `convnext`).
+- **`{train_fold}`**: Indicates the fold used for training.
+- **`{val_fold}`**: Indicates the fold used for validation.
+
+For example, the checkpoint:
+  
+  **`pannuke-combined-convnext-23.pth`**  
+  - **Trained on fold 2**
+  - **Validated on fold 3**
+  - **Tested on fold 1**
+  - **Uses ConvNeXt as the encoder**
+
+
+### CoNSeP Checkpoints Information
+
+For **CoNSeP**, the checkpoint follows a simpler naming convention:
+
+**`consep-combined-{encoder}.pth`**
+
+- **`{encoder}`**: Specifies the encoder used in the model (e.g., `convnext`).
+
+For example:
+  
+  **`consep-combined.pth`**  
+  - **Trained on the full CoNSeP dataset**  
+  - **Uses a combined training approach**
+
+
 
 ## Installation
 
