@@ -55,7 +55,7 @@ For **CoNSeP**, the checkpoint follows a simpler naming convention:
 For example:
   
   **`consep-combined.pth`**  
-  - *Trained on the full CoNSeP dataset* 
+  - *Trained on the Train CoNSeP dataset* 
   - *Uses a combined training approach*
 
 
