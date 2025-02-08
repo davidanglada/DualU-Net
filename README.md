@@ -19,10 +19,10 @@ DualU-Net has been evaluated on several public datasets:
 
 | Dataset  | Encoder              | Detection F1 | Classification F1 | Dice  | Checkpoint Link |
 |----------|----------------------|-------------|------------------|-------|----------------|
-| CoNSeP   | ResNeXt50_32x4d      | 0.72        | 0.56             | 0.76  | [Download] (https://drive.google.com/file/d/1v10hZvHK51V2u7QdqW5cU_EiLZ8KsvAv/view?usp=sharing) |                                   
-| CoNSeP   | ConvNeXt_base        | 0.72        | 0.54             | 0.80  | [Download] (https://drive.google.com/file/d/13KhPec60ctwBr7C-XjR1ah6H7cD800Q9/view?usp=sharing) |                                  
-| PanNuke  | ResNeXt50_32x4d      | 0.80        | 0.54             | 0.77  | [Download] (https://drive.google.com/drive/folders/1vnAJgmoaRf0I2C9HVWl-vM4ClsMAhH9T?usp=drive_link) |                                  
-| PanNuke  | ConvNeXt_base        | 0.80        | 0.55             | 0.74  | [Download] (https://drive.google.com/drive/folders/1shCvv29LDLxHygALOMqUIpfjIEAaaBhz?usp=sharing) |
+| CoNSeP   | ResNeXt50_32x4d      | 0.72        | 0.56             | 0.76  | [Download](https://drive.google.com/file/d/1v10hZvHK51V2u7QdqW5cU_EiLZ8KsvAv/view?usp=sharing) |                                   
+| CoNSeP   | ConvNeXt_base        | 0.72        | 0.54             | 0.80  | [Download](https://drive.google.com/file/d/13KhPec60ctwBr7C-XjR1ah6H7cD800Q9/view?usp=sharing) |                                  
+| PanNuke  | ResNeXt50_32x4d      | 0.80        | 0.54             | 0.77  | [Download](https://drive.google.com/drive/folders/1vnAJgmoaRf0I2C9HVWl-vM4ClsMAhH9T?usp=drive_link) |                                  
+| PanNuke  | ConvNeXt_base        | 0.80        | 0.55             | 0.74  | [Download](https://drive.google.com/drive/folders/1shCvv29LDLxHygALOMqUIpfjIEAaaBhz?usp=sharing) |
 
 
 ### PanNuke Checkpoints Information
@@ -38,10 +38,10 @@ The provided **PanNuke** checkpoints are trained on one fold of the dataset, val
 For example, the checkpoint:
   
   **`pannuke-combined-convnext-23.pth`**  
-  - **Trained on fold 2**
-  - **Validated on fold 3**
-  - **Tested on fold 1**
-  - **Uses ConvNeXt as the encoder**
+  - *Trained on fold 2*
+  - *Validated on fold 3*
+  - *Tested on fold 1*
+  - *Uses ConvNeXt as the encoder*
 
 
 ### CoNSeP Checkpoints Information
