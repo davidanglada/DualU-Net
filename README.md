@@ -1,4 +1,4 @@
-# Two Heads Are Enough: DualU-Net, a Fast and Efficient Architecture for Cell Classification and Segmentation (Under Construction)
+# Two Heads Are Enough: DualU-Net, a Fast and Efficient Architecture for Cell Classification and Segmentation
 
 DualU-Net is a multi-task deep learning model for nuclei segmentation and classification. It employs a dual-decoder design that predicts both pixel-wise segmentation maps and Gaussian-based centroid density maps, enabling fast and accurate instance segmentation in histopathological images.
 
