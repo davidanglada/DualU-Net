@@ -2,6 +2,8 @@
 
 DualU-Net is a multi-task deep learning model for nuclei segmentation and classification. It employs a dual-decoder design that predicts both pixel-wise segmentation maps and Gaussian-based centroid density maps, enabling fast and accurate instance segmentation in histopathological images.
 
+[Read the MIDL25 (Under Review) paper](https://openreview.net/forum?id=lK0CklgxQd)
+
 ![DualU-Net Architecture](docs/esquema_ex.jpg)
 
 > **Note**: This repository is under active development. Please anticipate frequent changes.
@@ -10,10 +12,8 @@ DualU-Net is a multi-task deep learning model for nuclei segmentation and classi
 
 DualU-Net has been evaluated on several public datasets:
 
-- **PanNuke**: A dataset for tissue and nuclei segmentation in histopathology.  
-  [Link](https://arxiv.org/abs/2003.10778)
-- **CoNSeP**: A colorectal cancer nuclei segmentation dataset.  
-  [Link](https://github.com/vqdang/hover_net)
+- **PanNuke**: A dataset for tissue and nuclei segmentation in histopathology.  [Link](https://arxiv.org/abs/2003.10778)
+- **CoNSeP**: A colorectal cancer nuclei segmentation dataset.  [Link](https://github.com/vqdang/hover_net)
 
 ## Results and Checkpoints
 
@@ -55,8 +55,8 @@ For **CoNSeP**, the checkpoint follows a simpler naming convention:
 For example:
   
   **`consep-combined.pth`**  
-  - **Trained on the full CoNSeP dataset**  
-  - **Uses a combined training approach**
+  - *Trained on the full CoNSeP dataset* 
+  - *Uses a combined training approach*
 
 
 
@@ -70,7 +70,7 @@ For example:
 2. **Create a virtual environment**:
    ```bash
    python -m venv dualunet-env
-   source dualunet-env/bin/activate  # On Windows use `dualunet-env\Scripts\activate`
+   source dualunet-env/bin/activate 
    ```
 
 3. **Install required dependencies**:
