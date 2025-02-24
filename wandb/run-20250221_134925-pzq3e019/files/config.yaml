@@ -1,0 +1,155 @@
+wandb_version: 1
+
+dataset:
+  desc: null
+  value:
+    train:
+      name: consep
+      root: /mnt/work/users/david.anglada/datasets/consep_coco/
+      fold: Train
+      num_classes: 4
+    val:
+      name: consep
+      root: /mnt/work/users/david.anglada/datasets/consep_coco/
+      fold: Test
+      num_classes: 4
+loader:
+  desc: null
+  value:
+    train:
+      shuffle: true
+      batch_size: 4
+      num_workers: 1
+      drop_last: false
+    val:
+      shuffle: false
+      batch_size: 1
+      num_workers: 1
+      drop_last: false
+optimizer:
+  desc: null
+  value:
+    lr_base: 0.0002
+    epochs: 100
+    weight_decay: 0.0001
+    lr_drop_steps:
+    - 70
+    - 90
+    lr_drop_factor: 0.1
+    lr_auto_scale: true
+distributed:
+  desc: null
+  value: true
+training:
+  desc: null
+  value:
+    weight_dice: 1.0
+    weight_dice_b: 1.0
+    weight_ce: 1.0
+    weight_mse: 1.0
+    ce_weights: ./ce_weights_consep_Train_b10.npy
+    sigma: 5
+    th: 0.15
+transforms:
+  desc: null
+  value:
+    normalize:
+      mean:
+      - 0.485
+      - 0.456
+      - 0.406
+      std:
+      - 0.229
+      - 0.224
+      - 0.225
+    augmentations:
+    - name: hflip
+      p: 0.5
+    - name: vflip
+      p: 0.5
+    - name: rotate90
+model:
+  desc: null
+  value:
+    encoder_name: resnext50_32x4d
+    classes_s: 4
+    classes_c: 1
+    encoder_weights: imagenet
+    decoder_channels:
+    - 256
+    - 128
+    - 64
+    - 32
+    - 16
+    decoder_use_batchnorm: true
+evaluation:
+  desc: null
+  value:
+    thresholds:
+    - 0.5
+    max_pair_distance: 12
+    interval: 10
+experiment:
+  desc: null
+  value:
+    wandb: true
+    project: DualU-Net_uncert_loss
+    name: resnext_consep
+    wandb_group: train
+    seed: 42
+    output_dir: /mnt/work/users/david.anglada/dualunet/checkpoints/
+    output_name: resnext_consep
+    resume: false
+rank:
+  desc: null
+  value: 0
+world_size:
+  desc: null
+  value: 2
+gpu:
+  desc: null
+  value: 0
+dist_url:
+  desc: null
+  value: env://
+dist_backend:
+  desc: null
+  value: nccl
+_wandb:
+  desc: null
+  value:
+    python_version: 3.10.12
+    cli_version: 0.16.2
+    framework: huggingface
+    huggingface_version: 4.40.2
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    start_time: 1740142165.177937
+    t:
+      1:
+      - 1
+      - 11
+      - 41
+      - 49
+      - 54
+      - 55
+      - 63
+      2:
+      - 1
+      - 11
+      - 41
+      - 49
+      - 54
+      - 55
+      - 63
+      3:
+      - 2
+      - 13
+      - 16
+      - 23
+      4: 3.10.12
+      5: 0.16.2
+      6: 4.40.2
+      8:
+      - 5
+      13: linux-x86_64

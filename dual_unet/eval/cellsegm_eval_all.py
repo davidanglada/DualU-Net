@@ -395,10 +395,8 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
             labels_i = true_labels[i]
             true_cents_i = []
             for box in boxes_i:
-                # box is (ymin, xmin, ymax, xmax)
-                y_min, x_min, y_max, x_max = box
-                centroid_x = ((x_max - x_min) / 2) + x_min
-                centroid_y = ((y_max - y_min) / 2) + y_min
+                centroid_x = ((box[2] - box[0]) / 2) + box[0]
+                centroid_y = ((box[3] - box[1]) / 2) + box[1]
                 true_cents_i.append((centroid_y, centroid_x))
             true_cents_i = np.array(true_cents_i)
 
@@ -431,21 +429,37 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
                 true_cents_i, pred_cents_i, self.max_pair_distance
             )
 
-            # Offset indexing for global pairing
-            if i != 0:
-                true_idx_offset += true_inst_type_all[-1].shape[0]
-                pred_idx_offset += pred_inst_type_all[-1].shape[0]
+            if paired.shape[0] > 0:
+                max_paired_true_idx = paired[:, 0].max()
+                max_paired_pred_idx = paired[:, 1].max()
 
+            # accumulating
+            
+            true_idx_offset = (
+                true_idx_offset + true_inst_type_all[-1].shape[0] if i != 0 else 0
+            )
+            pred_idx_offset = (
+                pred_idx_offset + pred_inst_type_all[-1].shape[0] if i != 0 else 0
+            )
             true_inst_type_all.append(labels_i)
+            # true_inst_type_all = np.concatenate([true_inst_type_all, true_labels_i])
             pred_inst_type_all.append(pred_labels_i)
+            # pred_inst_type_all = np.concatenate([pred_inst_type_all, pred_labels_i])
 
-            if paired.shape[0] != 0:
+            paired_i = paired.copy()
+            unpaired_true_i = unpaired_true.copy()
+            unpaired_pred_i = unpaired_pred.copy()
+
+            # increment the pairing index statistic
+            if paired.shape[0] != 0:  # ! sanity
                 paired[:, 0] += true_idx_offset
                 paired[:, 1] += pred_idx_offset
                 paired_all.append(paired)
 
-            unpaired_true_all.append(unpaired_true + true_idx_offset)
-            unpaired_pred_all.append(unpaired_pred + pred_idx_offset)
+            unpaired_true += true_idx_offset
+            unpaired_pred += pred_idx_offset
+            unpaired_true_all.append(unpaired_true)
+            unpaired_pred_all.append(unpaired_pred)
 
             # If we have instance masks (train=False), compute instance-level PQ, dice, etc.
             if not self.train and true_masks[i] is not None:
@@ -505,23 +519,13 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
                 )
 
         # Flatten detection
-        paired_all = (
-            np.concatenate(paired_all, axis=0) if len(paired_all) != 0 
-            else np.empty((0, 2), dtype=np.int64)
-        )
+        paired_all = np.concatenate(paired_all, axis=0) if len(paired_all) != 0 else np.empty((0,2), dtype=np.int64)
         unpaired_true_all = np.concatenate(unpaired_true_all, axis=0)
         unpaired_pred_all = np.concatenate(unpaired_pred_all, axis=0)
         true_inst_type_all = np.concatenate(true_inst_type_all, axis=0)
         pred_inst_type_all = np.concatenate(pred_inst_type_all, axis=0)
-
-        paired_true_type = (
-            true_inst_type_all[paired_all[:, 0]] if paired_all.shape[0] > 0 
-            else np.empty((0,), dtype=int)
-        )
-        paired_pred_type = (
-            pred_inst_type_all[paired_all[:, 1]] if paired_all.shape[0] > 0 
-            else np.empty((0,), dtype=int)
-        )
+        paired_true_type = true_inst_type_all[paired_all[:, 0]]
+        paired_pred_type = pred_inst_type_all[paired_all[:, 1]]
         unpaired_true_type = true_inst_type_all[unpaired_true_all]
         unpaired_pred_type = pred_inst_type_all[unpaired_pred_all]
 
@@ -645,47 +649,57 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
           predicted_mask (H,W) as majority-class map,
           cells_mask (H,W) binary foreground.
         """
-        # Argmax to get single-channel predicted classes
+        # Step 1: Create binary mask for centroids (pred_centroids is 1xHxW)
+        centroid_mask, pred_centr = find_local_maxima(pred_centroids[0], self.th)  # Find the local maxima for centroids
+        
+        _, markers = cv2.connectedComponents(centroid_mask.astype(np.uint8), 4, ltype=cv2.CV_32S)
+        
         pred_mask_argmax = np.argmax(pred_mask, axis=0).astype(np.uint8)
-        cells_mask = (pred_mask_argmax > 0).astype(np.uint8)
+        cells_mask = np.zeros_like(pred_mask_argmax)
+        cells_mask[pred_mask_argmax > 0] = 1
 
-        # Markers from local maxima
-        centroid_map, centroids_list = find_local_maxima(pred_centroids[0], self.th)
-        _, markers = cv2.connectedComponents(centroid_map.astype(np.uint8), 4, ltype=cv2.CV_32S)
+        
 
-        # Distance transform
-        dist_map = distance_transform_edt(cells_mask)
-        watershed_result = watershed(-dist_map, markers, mask=cells_mask, compactness=1)
+        # Step 4: Apply watershed algorithm to split regions based on centroids
+        distance_map = distance_transform_edt(cells_mask)
+        watershed_result = watershed(-distance_map, markers, mask=cells_mask, compactness=1)
 
-        # Remove boundary lines for clarity
+        # Step 5: Find the connected components (regions) after watershed
+        # labeled_mask, num_labels = label(watershed_result > 0)
+
+        # Step 6: Calculate centroids and associated class for each connected component
+        predicted_centroids = []
+        predicted_classes = []
+        # for i in np.unique(watershed_result):
+        #     print(i)
         contours = np.invert(find_boundaries(watershed_result, mode='outer', background=0))
         watershed_result = watershed_result * contours
 
-        # Relabel
+        binary_mask = np.zeros_like(watershed_result)
+        binary_mask[np.where(watershed_result > 0)] = 1
+        predicted_mask = pred_mask_argmax*binary_mask
+        # RElabeling the watershed mask
         labeled_mask, num_labels = label(watershed_result)
-        predicted_mask = np.zeros_like(labeled_mask, dtype=np.uint8)
-
-        predicted_centroids = []
-        predicted_classes = []
-
-        for rid in range(1, num_labels + 1):
-            region_mask = (labeled_mask == rid)
+        # print(np.unique(labeled_mask))
+        # print(np.unique(watershed_result))
+         
+        for id in np.unique(labeled_mask):
+            if id == 0:
+                continue
+            region_mask = labeled_mask == id
+            # print(region_mask)
             class_in_region = pred_mask_argmax[region_mask]
+            # print(class_in_region)
             majority_class = np.bincount(class_in_region).argmax()
             predicted_mask[region_mask] = majority_class
+            region_coords = np.argwhere(region_mask)
+            centroid_yx = region_coords.mean(axis=0)[::-1]
 
-            coords = np.argwhere(region_mask)
-            cy, cx = coords.mean(axis=0)
-            predicted_centroids.append((cy, cx))
+            predicted_centroids.append((centroid_yx[1], centroid_yx[0]))
             predicted_classes.append(majority_class)
 
-        return (
-            np.array(predicted_centroids, dtype=float),
-            np.array(predicted_classes, dtype=int),
-            predicted_mask,
-            cells_mask
-        )
-
+        # print(len(predicted_centroids))
+        return np.asarray(predicted_centroids), np.asarray(predicted_classes), predicted_mask, cells_mask
     def _denormalize(
         self,
         image: Union[torch.Tensor, np.ndarray],

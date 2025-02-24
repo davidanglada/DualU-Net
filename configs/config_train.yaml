@@ -13,12 +13,12 @@ dataset:
 loader:
   train:
     shuffle: True
-    batch_size: 1
+    batch_size: 4
     num_workers: 1
     drop_last: False
   val:
     shuffle: False
-    batch_size: 4
+    batch_size: 1
     num_workers: 1
     drop_last: False
 
@@ -65,14 +65,14 @@ model:
 evaluation:
   thresholds: [0.5]
   max_pair_distance: 12
-  interval: 1
+  interval: 10
 
 experiment:
   wandb: True
-  project: "Your_Project_Name"
-  name: "checkpoint.pth" 
+  project: "DualU-Net_uncert_loss"
+  name: "resnext_consep" 
   wandb_group: "train"
   seed: 42
-  output_dir: ./
-  output_name: "checkpoint.pth" 
+  output_dir: /mnt/work/users/david.anglada/dualunet/checkpoints/
+  output_name: "resnext_consep" 
   resume: False

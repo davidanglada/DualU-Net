@@ -120,11 +120,16 @@ def train(cfg: Dict[str, Any]) -> None:
     # Training loop
     for epoch in range(cfg['optimizer']['epochs']):
         print(f"Starting epoch {epoch}...")
+        # set epoch in sampler
+        if cfg['distributed']:
+            train_loader.sampler.set_epoch(epoch)
+
         train_stats = train_one_epoch(
             cfg, model, criterion, train_loader, optimizer, device, epoch,
             max_pair_distance=cfg['evaluation']['max_pair_distance']
         )
-
+        lr_scheduler.step()
+        
         val_stats = dict()
         if epoch in [1, cfg['optimizer']['epochs']] or epoch % cfg['evaluation']['interval']==0:
             print("Evaluating")

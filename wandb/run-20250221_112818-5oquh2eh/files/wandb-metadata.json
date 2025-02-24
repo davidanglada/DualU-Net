@@ -1,0 +1,251 @@
+{
+    "os": "Linux-5.15.0-89-generic-x86_64-with-glibc2.35",
+    "python": "3.10.12",
+    "heartbeatAt": "2025-02-21T10:28:18.865762",
+    "startedAt": "2025-02-21T10:28:18.184715",
+    "docker": null,
+    "cuda": null,
+    "args": [
+        "--config",
+        "configs/config_eval.yaml"
+    ],
+    "state": "running",
+    "program": "/home/usuaris/imatge/david.anglada/PhD/tesi/dualunet/DualU-Net/eval.py",
+    "codePathLocal": "eval.py",
+    "codePath": "eval.py",
+    "git": {
+        "remote": "https://github.com/davidanglada/DualU-Net.git",
+        "commit": "8e598da9844c9aa3ef3b101a1c8f2d86c17a6de7"
+    },
+    "email": "david.anglada@estudiantat.upc.edu",
+    "root": "/home/usuaris/imatge/david.anglada/PhD/tesi/dualunet/DualU-Net",
+    "host": "gpic13",
+    "username": "david.anglada",
+    "executable": "/home/usuaris/imatge/david.anglada/venv/phd2/bin/python",
+    "cpu_count": 20,
+    "cpu_count_logical": 40,
+    "cpu_freq": {
+        "current": 2314.8497749999997,
+        "min": 1000.0,
+        "max": 3200.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2810.485,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2899.083,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2898.174,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2865.511,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2892.318,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1100.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1610.54,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1841.291,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2376.295,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1600.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1300.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2705.072,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2899.958,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2897.06,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2870.749,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2897.102,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2899.188,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2896.865,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 2000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 3200.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1178.024,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1956.193,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        },
+        {
+            "current": 1000.0,
+            "min": 1000.0,
+            "max": 3200.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 97.87200164794922,
+            "used": 20.486339569091797
+        }
+    },
+    "gpu": "Quadro RTX 5000",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "Quadro RTX 5000",
+            "memory_total": 17179869184
+        }
+    ],
+    "memory": {
+        "total": 251.53359985351562
+    }
+}

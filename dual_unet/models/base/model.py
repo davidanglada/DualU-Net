@@ -8,7 +8,7 @@
 
 import torch
 from . import initialization as init
-
+import torch.nn as nn
 
 class SegmentationModel(torch.nn.Module):
     """
@@ -22,24 +22,26 @@ class SegmentationModel(torch.nn.Module):
 
     def initialize(self) -> None:
         """
-        Initialize decoder and head(s) using standard weight initialization schemes.
+        Initialize ONLY the segmentation decoder & head (and classification head if any),
+        skipping the count decoder & count head — matching Code A's behavior.
         """
+        # 1) Initialize segmentation decoder
         init.initialize_decoder(self.decoder_seg)
-        init.initialize_decoder(self.decoder_count)
-        init.initialize_head(self.segmentation_head)
-        init.initialize_head(self.count_head)
 
-        if self.classification_head is not None:
+        # 2) Initialize segmentation head
+        init.initialize_head(self.segmentation_head)
+
+        # 3) Initialize classification head if present
+        #    (Code A does so if self.classification_head is not None)
+        if hasattr(self, "classification_head") and self.classification_head is not None:
             init.initialize_head(self.classification_head)
+
+        # NOTE: We do NOT initialize self.decoder_count or self.count_head,
+        # because Code A never does it.
 
     def forward(self, x: torch.Tensor):
         """
         Forward pass through the model: encoder -> decoders -> heads.
-
-        Returns:
-            - If count head is present: (segmentation_mask, count_mask) or
-              (segmentation_mask, count_mask, classification_labels).
-            - Otherwise: segmentation_mask or (segmentation_mask, classification_labels).
         """
         # 1) Encode
         features = self.encoder(x)
@@ -48,7 +50,7 @@ class SegmentationModel(torch.nn.Module):
         decoder_output_s = self.decoder_seg(*features)
         masks_s = self.segmentation_head(decoder_output_s)
 
-        # 3) Decode for count if available
+        # 3) Decode for count if available (NOT re-initialized, same as Code A)
         if hasattr(self, 'count_head') and self.count_head is not None:
             decoder_output_c = self.decoder_count(*features)
             masks_c = self.count_head(decoder_output_c)
@@ -71,13 +73,6 @@ class SegmentationModel(torch.nn.Module):
     def predict(self, x: torch.Tensor):
         """
         Inference mode. Switches model to `eval` mode, does a forward pass with no grad.
-
-        Args:
-            x (torch.Tensor): A 4D tensor (N, C, H, W)
-
-        Returns:
-            Depending on the model architecture, can be a single segmentation mask,
-            or multiple outputs (seg + count, seg + labels, etc.).
         """
         if self.training:
             self.eval()

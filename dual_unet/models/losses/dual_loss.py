@@ -86,6 +86,6 @@ class DualLoss_combined(nn.Module):
         loss_mse = self.mse_loss(pred_centroids, target_centroids)
 
         # Weighted sum of all components
-        total_loss = loss_ce + (self.weight_dice * loss_dice) + (self.weight_mse * loss_mse)
+        total_loss = (self.weight_ce * loss_ce) + (self.weight_dice * loss_dice) + (self.weight_mse * loss_mse)
 
         return total_loss

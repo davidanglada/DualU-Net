@@ -78,7 +78,7 @@ resnet_encoders = {
         "encoder": ResNetEncoder,
         "pretrained_settings": {
             "imagenet": {
-                "url": resnet18(weights=ResNet18_Weights.DEFAULT).state_dict(),
+                "url": resnet18(weights=ResNet18_Weights.IMAGENET1K_V1).state_dict(),
                 'input_size': [3, 224, 224],
                 'input_range': [0, 1],
                 'mean': [0.485, 0.456, 0.406],
@@ -96,7 +96,7 @@ resnet_encoders = {
         "encoder": ResNetEncoder,
         "pretrained_settings": {
             "imagenet": {
-                "url": resnet34(weights=ResNet34_Weights.DEFAULT).state_dict(),
+                "url": resnet34(weights=ResNet34_Weights.IMAGENET1K_V1).state_dict(),
                 'input_size': [3, 224, 224],
                 'input_range': [0, 1],
                 'mean': [0.485, 0.456, 0.406],
@@ -114,7 +114,7 @@ resnet_encoders = {
         "encoder": ResNetEncoder,
         "pretrained_settings": {
             "imagenet": {
-                "url": resnet50(weights=ResNet50_Weights.DEFAULT).state_dict(),
+                "url": resnet50(weights=ResNet50_Weights.IMAGENET1K_V1).state_dict(),
                 'input_size': [3, 224, 224],
                 'input_range': [0, 1],
                 'mean': [0.485, 0.456, 0.406],
@@ -132,7 +132,7 @@ resnet_encoders = {
         "encoder": ResNetEncoder,
         "pretrained_settings": {
             "imagenet": {
-                "url": resnet101(weights=ResNet101_Weights.DEFAULT).state_dict(),
+                "url": resnet101(weights=ResNet101_Weights.IMAGENET1K_V1).state_dict(),
                 'input_size': [3, 224, 224],
                 'input_range': [0, 1],
                 'mean': [0.485, 0.456, 0.406],
@@ -150,7 +150,7 @@ resnet_encoders = {
         "encoder": ResNetEncoder,
         "pretrained_settings": {
             "imagenet": {
-                "url": resnet152(weights=ResNet152_Weights.DEFAULT).state_dict(),
+                "url": resnet152(weights=ResNet152_Weights.IMAGENET1K_V1).state_dict(),
                 'input_size': [3, 224, 224],
                 'input_range': [0, 1],
                 'mean': [0.485, 0.456, 0.406],
@@ -168,7 +168,7 @@ resnet_encoders = {
         "encoder": ResNetEncoder,
         "pretrained_settings": {
             "imagenet": {
-                "url": resnext50_32x4d(weights=ResNeXt50_32X4D_Weights.DEFAULT).state_dict(),
+                "url": resnext50_32x4d(weights=ResNeXt50_32X4D_Weights.IMAGENET1K_V1).state_dict(),
                 'input_size': [3, 224, 224],
                 'input_range': [0, 1],
                 'mean': [0.485, 0.456, 0.406],
@@ -188,7 +188,7 @@ resnet_encoders = {
         "encoder": ResNetEncoder,
         "pretrained_settings": {
             "imagenet": {
-                "url": resnext101_32x8d(weights=ResNeXt101_32X8D_Weights.DEFAULT).state_dict(),
+                "url": resnext101_32x8d(weights=ResNeXt101_32X8D_Weights.IMAGENET1K_V1).state_dict(),
                 'input_size': [3, 224, 224],
                 'input_range': [0, 1],
                 'mean': [0.485, 0.456, 0.406],

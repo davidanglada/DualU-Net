@@ -2,7 +2,7 @@ dataset:
   test:
     name: consep
     root: "/mnt/work/users/david.anglada/datasets/consep_coco/"  # Path to the test dataset
-    fold: Test
+    fold: Train
     num_classes: 4                   # Fold to use for testing
 
 loader:
@@ -56,8 +56,8 @@ evaluation:
 experiment:
   wandb: True
   project: "Your_Project_Name"
-  name: "checkpoint.pth" 
+  name: "resnext_consep_epoch_90.pth" 
   wandb_group: "test"
   seed: 42
-  output_dir: ./ 
-  output_name: "checkpoint.pth_epoch_1.pth"
+  output_dir: /mnt/work/users/david.anglada/dualunet/checkpoints 
+  output_name: "resnext_consep_epoch_90.pth"

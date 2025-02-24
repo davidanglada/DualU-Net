@@ -16,16 +16,26 @@ import sys
 import time
 from typing import Iterable, List, Dict, Any
 
+import torch.nn as nn
+import torch.distributed as dist
+
 import torch
 from torch.cuda.amp import autocast, GradScaler
 
 import dual_unet.utils.misc as utils
 from dual_unet.eval import MultiTaskEvaluationMetric_all
 
+def reduce_tensor(tensor: torch.Tensor) -> torch.Tensor:
+    """ Reduce a tensor across all processes to get the average loss. """
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= dist.get_world_size()
+    return rt
+
 def train_one_epoch(
     cfg: Dict[str, Any],
-    model: torch.nn.Module,
-    criterion: torch.nn.Module,
+    model: nn.Module,
+    criterion: nn.Module,
     data_loader: Iterable,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
@@ -35,7 +45,7 @@ def train_one_epoch(
     max_norm: float = 0
 ) -> Dict[str, float]:
     """
-    Train the model for one epoch.
+    Train the model for one epoch with optimized distributed training.
 
     Args:
         cfg: Configuration dictionary.
@@ -61,18 +71,25 @@ def train_one_epoch(
 
     scaler = GradScaler()
 
+    # Ensure unique data per GPU
+    if isinstance(data_loader.sampler, torch.utils.data.distributed.DistributedSampler):
+        data_loader.sampler.set_epoch(epoch)
+
     metrics = {
         'f': MultiTaskEvaluationMetric_all(
             num_classes=data_loader.dataset.num_classes,
             thresholds=thresholds,
             max_pair_distance=max_pair_distance,
             class_names=data_loader.dataset.class_names,
-            dataset = cfg['dataset']['train']['name'],
+            dataset=cfg['dataset']['train']['name'],
             train=True
         )
     }
 
-    for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    all_predictions = []
+    all_targets = []
+
+    for i, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         samples = samples.to(device)
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
 
@@ -82,9 +99,21 @@ def train_one_epoch(
             outputs = model(samples)
             loss = criterion(outputs, targets)
 
-        loss_value = loss.item()
+        # Prevent NaN propagation
+        if not torch.isfinite(loss):
+            print(f"Loss is {loss.item()}, stopping training")
+            sys.exit(1)
 
-        scaler.scale(loss).backward()
+        # Reduce loss across all GPUs
+        loss_value = reduce_tensor(loss).item()
+
+        # Use no_sync() to reduce communication overhead, sync every 4 steps
+        if i % 4 != 0 and dist.get_world_size() > 1:
+            with model.no_sync():
+                scaler.scale(loss).backward()
+        else:
+            scaler.scale(loss).backward()
+
         if max_norm > 0:
             scaler.unscale_(optimizer)
             grad_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
@@ -94,29 +123,33 @@ def train_one_epoch(
         scaler.step(optimizer)
         scaler.update()
 
-        if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training")
-            sys.exit(1)
-
         metric_logger.update(loss=loss_value)
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
 
+        # Collect predictions for evaluation at the end of the epoch
         if epoch in [cfg['optimizer']['epochs']] or epoch % cfg['evaluation']['interval'] == 0:
-            predictions = [
+            all_predictions.extend([
                 {
                     'segmentation_mask': torch.softmax(outputs[0][i], dim=0),
                     'centroid_gaussian': outputs[1][i],
                     'image': samples[i],
                 }
                 for i in range(len(outputs[0]))
-            ]
-            for k in metrics:
-                metrics[k].update(predictions, targets)
+            ])
+            all_targets.extend(targets)
+
+    # Synchronize metrics only once per epoch
+    if epoch in [cfg['optimizer']['epochs']] or epoch % cfg['evaluation']['interval'] == 0:
+        for k in metrics:
+            metrics[k].update(all_predictions, all_targets)
 
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-    losses = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    
+    # Reduce losses across all GPUs before returning
+    losses = {k: reduce_tensor(torch.tensor(meter.global_avg, device=device)).item() for k, meter in metric_logger.meters.items()}
+
     if epoch in [cfg['optimizer']['epochs']] or epoch % cfg['evaluation']['interval'] == 0:
         metrics = {k: metrics[k].compute() for k in metrics}
         return {**losses, **metrics}
@@ -124,10 +157,18 @@ def train_one_epoch(
     return {**losses}
 
 @torch.no_grad()
+def reduce_tensor_eval(tensor: torch.Tensor) -> torch.Tensor:
+    """ Reduce a tensor across all processes to get the average loss. """
+    rt = tensor.clone()
+    dist.all_reduce(rt, op=dist.ReduceOp.SUM)
+    rt /= dist.get_world_size()
+    return rt
+
+@torch.no_grad()
 def evaluate(
     cfg: Dict[str, Any],
-    model: torch.nn.Module,
-    criterion: torch.nn.Module,
+    model: nn.Module,
+    criterion: nn.Module,
     data_loader: Iterable,
     device: torch.device,
     thresholds: List[float] = [0.5],
@@ -135,9 +176,10 @@ def evaluate(
     th: float = 0.15
 ) -> Dict[str, float]:
     """
-    Evaluate the model.
+    Evaluate the model with optimized distributed evaluation.
 
     Args:
+        cfg: Configuration dictionary.
         model: The model to evaluate.
         criterion: The loss function.
         data_loader: DataLoader for evaluation data.
@@ -154,17 +196,25 @@ def evaluate(
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
 
+    # Ensure unique data per GPU
+    if isinstance(data_loader.sampler, torch.utils.data.distributed.DistributedSampler):
+        data_loader.sampler.set_epoch(0)
+
     metrics = {
         'f': MultiTaskEvaluationMetric_all(
             num_classes=data_loader.dataset.num_classes,
             thresholds=thresholds,
             max_pair_distance=max_pair_distance,
             class_names=data_loader.dataset.class_names,
-            dataset = cfg['dataset']['val']['name'],
+            dataset=cfg['dataset']['val']['name'],
             train=True,
             th=th
         )
     }
+
+    all_predictions = []
+    all_targets = []
+    total_loss = torch.tensor(0.0, device=device)
 
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
@@ -172,7 +222,7 @@ def evaluate(
 
         outputs = model(samples)
         loss = criterion(outputs, targets)
-        metric_logger.update(loss=loss.item())
+        total_loss += loss  # Accumulate loss before reduction
 
         predictions = [
             {
@@ -182,20 +232,27 @@ def evaluate(
             }
             for i in range(len(outputs[0]))
         ]
-        for k in metrics:
-            metrics[k].update(predictions, targets)
+        all_predictions.extend(predictions)
+        all_targets.extend(targets)
+
+    # Synchronize and reduce loss across GPUs
+    total_loss = reduce_tensor_eval(total_loss) / len(data_loader)
+
+    # Compute metrics once at the end of evaluation
+    for k in metrics:
+        metrics[k].update(all_predictions, all_targets)
 
     metric_logger.synchronize_between_processes()
-    losses = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    losses = {k: reduce_tensor(torch.tensor(meter.global_avg, device=device)).item() for k, meter in metric_logger.meters.items()}
     metrics = {k: metrics[k].compute() for k in metrics}
 
-    return {**losses, **metrics}
+    return {**losses, "loss": total_loss.item(), **metrics}
 
 @torch.no_grad()
 def evaluate_test(
     cfg: Dict[str, Any],
-    model: torch.nn.Module,
-    criterion: torch.nn.Module,
+    model: nn.Module,
+    criterion: nn.Module,
     data_loader: Iterable,
     device: torch.device,
     thresholds: List[float] = [0.5],
@@ -205,9 +262,10 @@ def evaluate_test(
     th: float = 0.15
 ) -> Dict[str, float]:
     """
-    Evaluate the model for testing.
+    Evaluate the model for testing with optimized distributed evaluation.
 
     Args:
+        cfg: Configuration dictionary.
         model: The model to evaluate.
         criterion: The loss function.
         data_loader: DataLoader for evaluation data.
@@ -226,24 +284,34 @@ def evaluate_test(
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
 
+    # Ensure unique data per GPU
+    if isinstance(data_loader.sampler, torch.utils.data.distributed.DistributedSampler):
+        data_loader.sampler.set_epoch(0)
+
     metrics = {
         'f': MultiTaskEvaluationMetric_all(
             num_classes=data_loader.dataset.num_classes,
             thresholds=thresholds,
             max_pair_distance=max_pair_distance,
             class_names=data_loader.dataset.class_names,
-            dataset = cfg['dataset']['test']['name'],
+            dataset=cfg['dataset']['test']['name'],
             train=train,
             th=th,
             output_sufix=output_sufix
         )
     }
 
+    all_predictions = []
+    all_targets = []
+    total_loss = torch.tensor(0.0, device=device)
+
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in t.items()} for t in targets]
 
         outputs = model(samples)
+        loss = criterion(outputs, targets)
+        total_loss += loss  # Accumulate loss before reduction
 
         predictions = [
             {
@@ -253,13 +321,21 @@ def evaluate_test(
             }
             for i in range(len(outputs[0]))
         ]
-        for k in metrics:
-            metrics[k].update(predictions, targets)
+        all_predictions.extend(predictions)
+        all_targets.extend(targets)
+
+    # Synchronize and reduce loss across GPUs
+    total_loss = reduce_tensor(total_loss) / len(data_loader)
+
+    # Compute metrics once at the end of evaluation
+    for k in metrics:
+        metrics[k].update(all_predictions, all_targets)
 
     metric_logger.synchronize_between_processes()
     metrics = {k: metrics[k].compute() for k in metrics}
 
-    return {**metrics}
+    return {"loss": total_loss.item(), **metrics}
+
 
 @torch.no_grad()
 def evaluate_test_time(
