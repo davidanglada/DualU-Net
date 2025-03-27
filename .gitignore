@@ -160,6 +160,7 @@ cython_debug/
 #.idea/
 
 final_outputs/
+final_outputs_2/
 
 # torch
 *.pth
