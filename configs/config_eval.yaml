@@ -2,10 +2,15 @@ dataset:
   test:
     name: consep
     root: "/mnt/work/users/david.anglada/datasets/consep_coco/"  # Path to the test dataset
-    fold: Train
+    fold: Test
     num_classes: 4                   # Fold to use for testing
 
 loader:
+  val:
+    shuffle: False
+    batch_size: 1
+    num_workers: 1
+    drop_last: False
   test:
     shuffle: False
     batch_size: 1
@@ -55,9 +60,9 @@ evaluation:
 
 experiment:
   wandb: True
-  project: "Your_Project_Name"
-  name: "resnext_consep_epoch_90.pth" 
+  project: "DualU-Net_repo"
+  name: "resnext_consep_def_epoch_99.pth" 
   wandb_group: "test"
   seed: 42
-  output_dir: /mnt/work/users/david.anglada/dualunet/checkpoints 
-  output_name: "resnext_consep_epoch_90.pth"
+  output_dir: /mnt/work/users/david.anglada/dualunet/checkpoints/
+  output_name: "resnext_consep_def_epoch_99.pth"

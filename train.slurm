@@ -7,4 +7,4 @@
 
 source ../../../../venv/phd2/bin/activate
 
-python3 -m torch.distributed.launch --use-env --nproc-per-node=2 --master-port=29519 train.py --config ./configs/config_train.yaml
+python3 -m torch.distributed.launch --use-env --nproc-per-node=2 --master-port=29510 train.py --config ./configs/config_train.yaml

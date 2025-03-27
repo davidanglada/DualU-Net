@@ -107,13 +107,13 @@ Below are the basic commands to get you started with DualU-Net.
 ### 2. Training
 
 ```bash
-python train.py --config configs/train_config.yaml
+python train.py --config configs/config_train.yaml
 ```
 
 ### 3. Inference & Evaluation
 
 ```bash
-python eval.py --config configs/eval_config.yaml
+python eval.py --config configs/config_eval.yaml
 ```
 
 ## Citation

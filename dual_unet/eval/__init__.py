@@ -1,1 +1,2 @@
+from .cellsegm_eval import MultiTaskEvaluationMetric
 from .cellsegm_eval_all import MultiTaskEvaluationMetric as MultiTaskEvaluationMetric_all

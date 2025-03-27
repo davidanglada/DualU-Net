@@ -1,32 +1,36 @@
 import torch
 import torch.nn as nn
-from typing import Union
+from typing import Any
+
 
 class MSELoss(nn.Module):
     """
-    A wrapper around PyTorch's nn.MSELoss for centroid or continuous target regression.
+    A simple wrapper around PyTorch's built-in MSELoss for clarity and potential customization.
+
+    Example:
+        mse_loss_fn = MSELoss()
+        loss = mse_loss_fn(pred_centroids, gt_centroids)
     """
 
-    def __init__(self) -> None:
+    def __init__(self, **kwargs: Any) -> None:
         """
-        Initialize the MSELoss module.
-        """
-        super(MSELoss, self).__init__()
-        self.mse_loss = nn.MSELoss()
-
-    def forward(
-        self, 
-        pred: torch.Tensor, 
-        target: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        Compute the Mean Squared Error (MSE) between `pred` and `target`.
+        Initialize the MSELoss wrapper.
 
         Args:
-            pred (torch.Tensor): Predicted tensor, shape (N, *).
-            target (torch.Tensor): Ground-truth tensor, same shape as `pred`.
+            **kwargs: Additional keyword arguments passed to `nn.MSELoss` if needed.
+        """
+        super().__init__()
+        self.mse_loss = nn.MSELoss(**kwargs)
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """
+        Compute the Mean Squared Error (MSE) between predictions and targets.
+
+        Args:
+            pred (torch.Tensor): Predicted tensor.
+            target (torch.Tensor): Ground truth tensor.
 
         Returns:
-            torch.Tensor: A scalar tensor representing the MSE.
+            torch.Tensor: Scalar MSE loss value.
         """
         return self.mse_loss(pred, target)

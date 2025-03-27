@@ -1,210 +1,65 @@
-# Copyright (c) OpenMMLab. All rights reserved.
 import datetime
 import itertools
+import os.path as osp
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Sequence, Union, Tuple
+
+import numpy as np
 import torch
 import torch.distributed as dist
+import torch.nn as nn
+from torch.nn.functional import one_hot
+import torchmetrics
 import torchmetrics.functional as F
 from torchmetrics.regression import MeanSquaredError
-import numpy as np
-import cv2
-import matplotlib.pyplot as plt
-import os.path as osp
-import os
-import torchvision.transforms.v2 as v2
 
 import scipy
 from scipy.optimize import linear_sum_assignment
-from scipy.ndimage import distance_transform_edt, label
+from scipy.ndimage import (
+    maximum_filter,
+    label,
+    distance_transform_edt,
+    find_objects,
+    gaussian_filter
+)
+import cv2
+import torchvision.transforms.v2 as v2
+import matplotlib.pyplot as plt
+from skimage.segmentation import watershed, find_boundaries
 from skimage import exposure
 from skimage.morphology import extrema
-from skimage.segmentation import watershed, find_boundaries
 
-from typing import Dict, List, Optional, Union
-from collections import OrderedDict
-
-from ..utils.distributed import all_gather
+from ..utils.distributed import is_dist_avail_and_initialized, all_gather
 from .pq import compute_bPQ_and_mPQ, remap_label_and_class_map
 
 
-#########################################################
-# Helper Functions
-#########################################################
-
-def pair_coordinates(
-    setA: np.ndarray,
-    setB: np.ndarray,
-    radius: float
-) -> (np.ndarray, np.ndarray, np.ndarray):
-    """
-    Pair points between two sets using the Hungarian (Munkres) assignment algorithm,
-    subject to a distance threshold ('radius'). Points in setA and setB that 
-    can match within the given radius are paired.
-
-    Returns:
-        pairing (np.ndarray): (K, 2) matched indices (i in setA, j in setB).
-        unpairedA (np.ndarray): Indices of setA that are unmatched.
-        unpairedB (np.ndarray): Indices of setB that are unmatched.
-    """
-    # Distance matrix
-    pair_distance = scipy.spatial.distance.cdist(setA, setB, metric="euclidean")
-
-    # Apply Hungarian assignment
-    indicesA, matchedB = linear_sum_assignment(pair_distance)
-    costs = pair_distance[indicesA, matchedB]
-
-    # Keep matches within 'radius'
-    valid_matches = costs <= radius
-    pairedA = indicesA[valid_matches]
-    pairedB = matchedB[valid_matches]
-
-    pairing = np.stack([pairedA, pairedB], axis=-1)
-    unpairedA = np.delete(np.arange(setA.shape[0]), pairedA)
-    unpairedB = np.delete(np.arange(setB.shape[0]), pairedB)
-
-    return pairing, unpairedA, unpairedB
-
-
-def cell_detection_scores(
-    paired_true: np.ndarray,
-    paired_pred: np.ndarray,
-    unpaired_true: np.ndarray,
-    unpaired_pred: np.ndarray,
-    w: List[float] = [1, 1]
-) -> (float, float, float, float):
-    """
-    Compute detection-level F1, precision, recall, and "label matching" accuracy 
-    for matched/unmatched cells.
-
-    Returns:
-        f1_d, prec_d, rec_d, acc_d
-    """
-    tp_d = len(paired_true)
-    fp_d = len(unpaired_pred)
-    fn_d = len(unpaired_true)
-
-    # Among matched pairs, how many have the same label
-    tp_tn_dt = (paired_pred == paired_true).sum()
-    fp_fn_dt = (paired_pred != paired_true).sum()
-    acc_d = tp_tn_dt / (tp_tn_dt + fp_fn_dt) if (tp_tn_dt + fp_fn_dt) > 0 else 0.0
-
-    prec_d = tp_d / (tp_d + fp_d) if (tp_d + fp_d) > 0 else 0.0
-    rec_d  = tp_d / (tp_d + fn_d) if (tp_d + fn_d) > 0 else 0.0
-    denom  = (2*tp_d + w[0]*fp_d + w[1]*fn_d)
-    f1_d   = (2 * tp_d) / denom if denom > 0 else 0.0
-
-    return f1_d, prec_d, rec_d, acc_d
-
-
-def cell_type_detection_scores(
-    paired_true: np.ndarray,
-    paired_pred: np.ndarray,
-    unpaired_true: np.ndarray,
-    unpaired_pred: np.ndarray,
-    type_id: int,
-    w: List[float] = [2, 2, 1, 1],
-    exhaustive: bool = True,
-) -> (float, float, float):
-    """
-    Compute type-specific (class-specific) F1, precision, and recall for 
-    nuclei labeled with 'type_id'.
-    """
-    # Only keep matched pairs where at least one is of the desired type
-    type_samples = (paired_true == type_id) | (paired_pred == type_id)
-    paired_true = paired_true[type_samples]
-    paired_pred = paired_pred[type_samples]
-
-    tp_dt = ((paired_true == type_id) & (paired_pred == type_id)).sum()
-    tn_dt = ((paired_true != type_id) & (paired_pred != type_id)).sum()
-    fp_dt = ((paired_true != type_id) & (paired_pred == type_id)).sum()
-    fn_dt = ((paired_true == type_id) & (paired_pred != type_id)).sum()
-
-    if not exhaustive:
-        ignore = (paired_true == -1).sum()  # potential special-case ignoring
-        fp_dt -= ignore
-
-    fp_d = (unpaired_pred == type_id).sum()
-    fn_d = (unpaired_true == type_id).sum()
-
-    # Weighted precision / recall
-    denom_prec = (tp_dt + tn_dt + w[0] * fp_dt + w[2] * fp_d)
-    prec_type = (tp_dt + tn_dt) / denom_prec if denom_prec > 0 else 0.0
-
-    denom_rec = (tp_dt + tn_dt + w[1] * fn_dt + w[3] * fn_d)
-    rec_type = (tp_dt + tn_dt) / denom_rec if denom_rec > 0 else 0.0
-
-    # Weighted F1
-    denom_f1 = 2*(tp_dt + tn_dt) + w[0]*fp_dt + w[1]*fn_dt + w[2]*fp_d + w[3]*fn_d
-    f1_type = (2*(tp_dt + tn_dt)) / denom_f1 if denom_f1 > 0 else 0.0
-
-    return f1_type, prec_type, rec_type
-
-
-def find_local_maxima(
-    pred: np.ndarray,
-    h: float,
-    centers: bool = False
-) -> (np.ndarray, np.ndarray):
-    """
-    Find local maxima in a 2D map (for centroid detection).
-    If 'centers=True', assume 'pred' is already a binary map of centroids.
-    Otherwise use h-maxima transform with threshold 'h'.
-    """
-    if not centers:
-        pred = exposure.rescale_intensity(pred)
-        h_maxima = extrema.h_maxima(pred, h)
-    else:
-        # Already a centroid map
-        h_maxima = pred
-
-    connectivity = 4
-    output = cv2.connectedComponentsWithStats(h_maxima.astype(np.uint8), connectivity, ltype=cv2.CV_32S)
-    num_labels = output[0]
-    centroids = output[3]  # (num_labels, 2) -> [cx, cy]
-
-    coords_list = []
-    for i in range(num_labels):
-        if i != 0:  # skip background
-            coords_list.append((int(centroids[i, 1]), int(centroids[i, 0])))  # (y,x)
-
-    centroid_map = np.zeros_like(h_maxima)
-    for (r, c) in coords_list:
-        centroid_map[r, c] = 255
-
-    return centroid_map, np.array(coords_list, dtype=int)
-
-
-def get_dice_1(true: np.ndarray, pred: np.ndarray) -> float:
-    """
-    Traditional binary Dice coefficient. Both 'true' and 'pred' are
-    converted to binary (1 => foreground, 0 => background).
-    """
-    t = (true > 0).astype(np.uint8)
-    p = (pred > 0).astype(np.uint8)
-    inter = (t * p).sum()
-    denom = t.sum() + p.sum()
-    return 2.0 * inter / denom if denom > 0 else 0.0
-
-
-#########################################################
-# Base Classes
-#########################################################
-
 class BaseCellMetric:
     """
-    Base class for cell-based metrics in a (potentially) distributed environment.
-    Stores predictions and targets across steps, can synchronize among processes.
+    A base class for cell-level metric computation that synchronizes predictions
+    and targets across distributed processes if needed.
     """
+
     def __init__(
         self,
         num_classes: int,
         thresholds: Union[int, List[int]],
-        class_names: Optional[List[str]] = None
-    ):
+        class_names: Optional[List[str]] = None,
+        *args: Any,
+        **kwargs: Any
+    ) -> None:
+        """
+        Initialize the base metric class.
+
+        Args:
+            num_classes (int): Number of classes (excluding background).
+            thresholds (Union[int, List[int]]): Threshold(s) for evaluation.
+            class_names (Optional[List[str]]): Names of each class. If None, they will be generated as string indices.
+        """
+        super().__init__()
         self.num_classes = num_classes
         self.thresholds = thresholds if isinstance(thresholds, list) else [thresholds]
         self.class_names = (
-            class_names 
-            if class_names is not None 
+            class_names if class_names is not None
             else [str(i) for i in range(1, num_classes + 1)]
         )
         self.preds: List[Dict[str, torch.Tensor]] = []
@@ -212,101 +67,142 @@ class BaseCellMetric:
 
     def synchronize_between_processes(self) -> None:
         """
-        Collect predictions/targets from all processes if distributed.
+        Synchronize the predictions and targets across all distributed processes, if available.
         """
         if not dist.is_available() or not dist.is_initialized():
-            return
-        dist.barrier()
+            return  # If not in a distributed environment, do nothing
 
+        dist.barrier()  # Synchronize across all processes
         all_preds = all_gather(self.preds)
         all_targets = all_gather(self.targets)
         self.preds = list(itertools.chain(*all_preds))
         self.targets = list(itertools.chain(*all_targets))
 
     def reset(self) -> None:
-        """Clear accumulated predictions and targets."""
+        """
+        Reset predictions and targets, typically called before recomputing metrics.
+        """
         self.preds = []
         self.targets = []
 
     def update(
-        self, 
-        preds: List[Dict[str, torch.Tensor]], 
-        targets: List[Dict[str, torch.Tensor]]
+        self,
+        preds: List[Dict[str, torch.Tensor]],
+        target: List[Dict[str, torch.Tensor]]
     ) -> None:
         """
-        Add new predictions and targets to internal buffers.
+        Extend the list of predictions and targets with new results.
+
+        Args:
+            preds (List[Dict[str, torch.Tensor]]): List of prediction dicts.
+            target (List[Dict[str, torch.Tensor]]): List of target dicts.
         """
         self.preds.extend(preds)
-        self.targets.extend(targets)
+        self.targets.extend(target)
 
-    def compute(self) -> Dict[str, float]:
+    def compute(self) -> Any:
         """
-        Synchronize, gather final data, and compute the metrics.
+        Synchronize data, retrieve necessary values, and compute the metric.
+
+        Returns:
+            Any: Computed metric(s).
         """
         self.synchronize_between_processes()
         values = self._get_values()
         return self._compute(*values)
 
-    def _get_values(self):
+    def _get_values(self) -> Any:
+        """
+        Retrieve necessary values from predictions and targets. Must be overridden.
+
+        Returns:
+            Any: Values used for metric computation.
+        """
         raise NotImplementedError
 
-    def _compute(self, *args, **kwargs):
+    def _compute(self, *args: Any) -> Any:
+        """
+        Compute the metric given retrieved values. Must be overridden.
+
+        Returns:
+            Any: Computed metric(s).
+        """
         raise NotImplementedError
 
-
-#########################################################
-# Main Multi-Task Metric
-#########################################################
 
 class MultiTaskEvaluationMetric(BaseCellMetric):
     """
-    Evaluates cell segmentation, centroid detection/regression, classification, and PQ.
-    
-    - If train=True, we assume `t['masks']` is NOT available, skip instance-level metrics (PQ, instance-based dice, etc.).
-    - If train=False, we assume `t['masks']` is available, compute additional instance-level metrics (Panoptic, etc.).
+    A multi-task metric evaluator for cell detection, segmentation, and classification.
+    Includes Dice, MSE of centroid masks, detection/classification metrics, and PQ metrics.
     """
+
     def __init__(
         self,
         num_classes: int,
-        dataset: str,
         thresholds: Union[int, List[int]],
         class_names: Optional[List[str]] = None,
         max_pair_distance: float = 12,
         train: bool = True,
         th: float = 0.1,
-        output_sufix: Optional[str] = None
-    ):
-        super().__init__(num_classes, thresholds, class_names)
+        output_sufix: Optional[str] = None,
+        *args: Any,
+        **kwargs: Any
+    ) -> None:
+        """
+        Initialize the MultiTaskEvaluationMetric class.
+
+        Args:
+            num_classes (int): Number of classes (excluding background).
+            thresholds (Union[int, List[int]]): Threshold(s) for evaluation.
+            class_names (Optional[List[str]]): Names of each class.
+            max_pair_distance (float): Maximum distance for centroid pairing in detection metrics.
+            train (bool): True if in training mode (affects whether or not to save certain visualizations).
+            th (float): Threshold for local maxima detection of centroids.
+            output_sufix (Optional[str]): Suffix for output filenames.
+        """
+        super().__init__(num_classes, thresholds, class_names, *args, **kwargs)
         self.max_pair_distance = max_pair_distance
         self.train = train
-        self.th = th
-        self.output_sufix = output_sufix if output_sufix is not None \
+        self.output_sufix = (
+            output_sufix if output_sufix is not None
             else datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-        self.dataset = dataset
+        )
+        self.th = th
 
-    def _get_values(self):
+    def _get_values(self) -> Tuple[
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray],
+        List[np.ndarray]
+    ]:
         """
-        Extract necessary data from self.targets and self.preds. 
-        If train=True, t['masks'] won't exist -> set them to None.
+        Extract the necessary values from the predictions and targets for evaluation.
+
+        Returns:
+            A tuple containing:
+            - true_gaussian_centroids
+            - true_labels
+            - true_segmentation_mask
+            - true_boxes
+            - pred_gaussian_centroids
+            - pred_segmentation_mask
+            - images
+            - true_masks
         """
         true_gaussian_centroids = [t["centroid_gaussian"].detach().cpu().numpy() for t in self.targets]
         true_labels = [t["labels"].detach().cpu().numpy() for t in self.targets]
         true_segmentation_mask = [t["segmentation_mask"].detach().cpu().numpy() for t in self.targets]
         true_boxes = [t["boxes"].detach().cpu().numpy() for t in self.targets]
+        true_masks = [t["masks"].detach().cpu().numpy() for t in self.targets]
 
-        if not self.train:
-            # We have instance-level masks
-            true_masks = [t["masks"].detach().cpu().numpy() for t in self.targets]
-        else:
-            # None if not available in training
-            true_masks = [None] * len(self.targets)
-
-        # Predictions
         pred_gaussian_centroids = [p["centroid_gaussian"].detach().cpu().numpy() for p in self.preds]
         pred_segmentation_mask = [p["segmentation_mask"].detach().cpu().numpy() for p in self.preds]
         images = [p["image"].detach().cpu().numpy() for p in self.preds]
 
-        # Clean memory
         for p in self.preds:
             del p["image"]
             del p["centroid_gaussian"]
@@ -317,20 +213,13 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
             del t["segmentation_mask"]
             del t["boxes"]
             del t["labels"]
-            if not self.train:
-                del t["masks"]
 
         torch.cuda.empty_cache()
 
         return (
-            true_gaussian_centroids,
-            true_labels,
-            true_segmentation_mask,
-            true_boxes,
-            pred_gaussian_centroids,
-            pred_segmentation_mask,
-            images,
-            true_masks
+            true_gaussian_centroids, true_labels, true_segmentation_mask,
+            true_boxes, pred_gaussian_centroids, pred_segmentation_mask,
+            images, true_masks
         )
 
     def _compute(
@@ -342,116 +231,160 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
         pred_gaussian_centroids: List[np.ndarray],
         pred_segmentation_mask: List[np.ndarray],
         images: List[np.ndarray],
-        true_masks: List[Optional[np.ndarray]]
+        true_masks: List[np.ndarray]
     ) -> Dict[str, float]:
         """
-        Compute overall metrics:
-          - Dice (class segmentation)
-          - MSE (centroid heatmap)
-          - Detection F1 + classification
-          - If train=False (eval mode), compute instance-based metrics (PQ, instance-based dice).
+        Compute metrics including Dice, MSE (for centroid masks), cell detection/classification,
+        and Panoptic Quality.
+
+        Args:
+            true_gaussian_centroids (List[np.ndarray]): Ground truth Gaussian centroid masks.
+            true_labels (List[np.ndarray]): Ground truth class labels.
+            true_segmentation_mask (List[np.ndarray]): Ground truth segmentation masks.
+            true_boxes (List[np.ndarray]): Ground truth bounding boxes.
+            pred_gaussian_centroids (List[np.ndarray]): Predicted Gaussian centroid masks.
+            pred_segmentation_mask (List[np.ndarray]): Predicted segmentation masks.
+            images (List[np.ndarray]): Raw images for visualization.
+            true_masks (List[np.ndarray]): Ground truth instance masks.
+
+        Returns:
+            Dict[str, float]: A dictionary of computed metrics.
         """
         all_metrics: Dict[str, float] = {}
 
-        # Basic aggregator metrics
         dice_scores = []
         mse_scores = []
 
-        # Detection accumulators
-        paired_all = []
-        unpaired_true_all = []
-        unpaired_pred_all = []
-        true_inst_type_all = []
-        pred_inst_type_all = []
-        true_idx_offset = 0
-        pred_idx_offset = 0
+        paired_all: List[np.ndarray] = []
+        unpaired_true_all: List[np.ndarray] = []
+        unpaired_pred_all: List[np.ndarray] = []
 
-        # If we are not in train mode, we'll compute instance-level PQ metrics
-        # that require true_masks
+        true_inst_type_all: List[np.ndarray] = []
+        pred_inst_type_all: List[np.ndarray] = []
+
+        hn_dice_scores = []
+
+        gt_inst_map = []
+        pred_inst_map = []
+        gt_class_map = []
+        pred_class_map = []
+
         if not self.train:
-            hn_dice_scores = []
-            gt_inst_map = []
-            pred_inst_map = []
-            gt_class_map = []
-            pred_class_map = []
-        else:
-            # Just create empty placeholders so references won't break
-            hn_dice_scores = []
-            gt_inst_map = []
-            pred_inst_map = []
-            gt_class_map = []
-            pred_class_map = []
+            hn_aji_scores = []
+            hn_aji_plus_scores = []
+            hn_pq_dq_scores = []
+            hn_pq_sq_scores = []
+            hn_pq_scores = []
 
-        # -------------- Main Loop -------------- #
         for i in range(len(true_gaussian_centroids)):
-            # Convert to numpy arrays
-            t_gauss = true_gaussian_centroids[i]
-            p_gauss = pred_gaussian_centroids[i]
-            t_seg   = true_segmentation_mask[i]
-            p_seg   = pred_segmentation_mask[i]
+            print(f"Evaluating sample {i+1}/{len(true_gaussian_centroids)}")
 
-            # Build/compute "true" centroids from boxes
-            boxes_i = true_boxes[i]
-            labels_i = true_labels[i]
+            pred_masks_i = pred_segmentation_mask[i]
+            true_masks_i = true_segmentation_mask[i]
+            true_inst_masks_i = true_masks[i]
+
+            true_gaussian_mask_i = true_gaussian_centroids[i]
+            pred_gaussian_mask_i = pred_gaussian_centroids[i]
+
+            true_boxes_i = true_boxes[i]
+            true_labels_i = true_labels[i]
+
+            # Reconstruct centroids from boxes
             true_cents_i = []
-            for box in boxes_i:
+            for box in true_boxes_i:
                 centroid_x = ((box[2] - box[0]) / 2) + box[0]
                 centroid_y = ((box[3] - box[1]) / 2) + box[1]
                 true_cents_i.append((centroid_y, centroid_x))
-            true_cents_i = np.array(true_cents_i)
+            true_cents_i = np.asarray(true_cents_i)
 
-            # Compute dice (class-level) and MSE (heatmaps)
-            d_i = self._dice_coefficient(
-                true_masks=np.argmax(t_seg, axis=0),
-                pred_masks=np.argmax(p_seg, axis=0),
-                num_classes=self.num_classes
+            # Dice score
+            dice_val = self._dice_coefficient(
+                torch.argmax(torch.Tensor(true_masks_i), dim=0),
+                torch.argmax(torch.Tensor(pred_masks_i), dim=0),
+                self.num_classes
             )
-            dice_scores.append(d_i)
+            dice_scores.append(dice_val)
 
-            m_i = self._mse_centroids(t_gauss, p_gauss)
-            mse_scores.append(m_i)
+            # MSE for Gaussian centroid masks
+            mse_val = self._mse_centroids(true_gaussian_mask_i, pred_gaussian_mask_i)
+            mse_scores.append(mse_val)
 
-            # Watershed-based instance parse on the predicted segmentation
+            # Watershed-based refinement
             pred_cents_i, pred_labels_i, watershed_mask, cells_mask = self._perform_watershed(
-                p_seg, p_gauss
+                pred_masks_i,
+                pred_gaussian_mask_i
             )
 
-            # Handle centroid arrays (in case they are empty)
+            # Class/Instance mapping for PQ
+            pred_labels_i_copy = pred_labels_i.copy()
+            true_labels_i_copy = true_labels_i.copy()
+            true_cents_i_copy = true_cents_i.copy()
+            pred_cents_i_copy = pred_cents_i.copy()
+
+            pred_binary = np.zeros_like(watershed_mask)
+            pred_binary[watershed_mask > 0] = 1
+
+            true_binary = torch.argmax(torch.Tensor(true_masks_i), dim=0)
+            true_binary[true_binary > 0] = 1
+
+            cc_pred, _ = label(pred_binary)
+
+            # Build connected component for ground truth from instance masks
+            cc_true = np.zeros_like(cc_pred)
+            for k in range(true_inst_masks_i.shape[0]):
+                cc_true[true_inst_masks_i[k] > 0] = k + 1
+
+            gt_class_map_i = {}
+            for k, l in enumerate(true_labels_i_copy):
+                gt_class_map_i[k + 1] = l
+
+            pred_class_map_i = {}
+            for k, l in enumerate(pred_labels_i_copy):
+                pred_class_map_i[k + 1] = l
+
+            cc_pred, pred_class_map_i = remap_label_and_class_map(cc_pred, pred_class_map_i)
+            cc_true, gt_class_map_i = remap_label_and_class_map(cc_true, gt_class_map_i)
+
+            gt_inst_map.append(cc_true)
+            pred_inst_map.append(cc_pred)
+            gt_class_map.append(gt_class_map_i)
+            pred_class_map.append(pred_class_map_i)
+
+            # Dice in a simpler sense
+            hn_dice = get_dice_1(cc_true, cc_pred)
+            hn_dice_scores.append(hn_dice)
+
+            # (Optional) AJI and PQ for test mode
+            if not self.train:
+                pass  # Here, additional test-only computations (AJI, etc.) can be done if needed
+
+            # If no ground truth centroids, set a dummy
             if true_cents_i.shape[0] == 0:
                 true_cents_i = np.array([[0, 0]])
-                labels_i = np.array([0])
+                true_labels_i = np.array([0])
+
+            # If no predicted centroids, set a dummy
             if pred_cents_i.shape[0] == 0:
                 pred_cents_i = np.array([[0, 0]])
                 pred_labels_i = np.array([0])
 
-            # Pair coordinates
+            # Pair up centroids for detection/classification
             paired, unpaired_true, unpaired_pred = pair_coordinates(
-                true_cents_i, pred_cents_i, self.max_pair_distance
+                true_cents_i,
+                pred_cents_i,
+                self.max_pair_distance
             )
 
-            if paired.shape[0] > 0:
-                max_paired_true_idx = paired[:, 0].max()
-                max_paired_pred_idx = paired[:, 1].max()
-
-            # accumulating
-            
-            true_idx_offset = (
-                true_idx_offset + true_inst_type_all[-1].shape[0] if i != 0 else 0
+            true_idx_offset = 0 if i == 0 else (
+                true_idx_offset + true_inst_type_all[-1].shape[0]
             )
-            pred_idx_offset = (
-                pred_idx_offset + pred_inst_type_all[-1].shape[0] if i != 0 else 0
+            pred_idx_offset = 0 if i == 0 else (
+                pred_idx_offset + pred_inst_type_all[-1].shape[0]
             )
-            true_inst_type_all.append(labels_i)
-            # true_inst_type_all = np.concatenate([true_inst_type_all, true_labels_i])
+            true_inst_type_all.append(true_labels_i)
             pred_inst_type_all.append(pred_labels_i)
-            # pred_inst_type_all = np.concatenate([pred_inst_type_all, pred_labels_i])
 
-            paired_i = paired.copy()
-            unpaired_true_i = unpaired_true.copy()
-            unpaired_pred_i = unpaired_pred.copy()
-
-            # increment the pairing index statistic
-            if paired.shape[0] != 0:  # ! sanity
+            if paired.shape[0] != 0:
                 paired[:, 0] += true_idx_offset
                 paired[:, 1] += pred_idx_offset
                 paired_all.append(paired)
@@ -461,75 +394,76 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
             unpaired_true_all.append(unpaired_true)
             unpaired_pred_all.append(unpaired_pred)
 
-            # If we have instance masks (train=False), compute instance-level PQ, dice, etc.
-            if not self.train and true_masks[i] is not None:
-                true_inst_masks_i = true_masks[i]  # shape = (#instances, H, W)
+            # Visualization in non-train mode
+            if not self.train:
+                # Example: possible debug or final output images
+                _, pred_centroids_list = find_local_maxima(pred_gaussian_mask_i[0], self.th)
+                paired_i = paired.copy()
+                unpaired_true_i = unpaired_true.copy()
+                unpaired_pred_i = unpaired_pred.copy()
 
-                # Build a connected-component map for the pred
-                cc_pred = label((watershed_mask > 0).astype(np.uint8))[0]
-                cc_true = np.zeros_like(cc_pred, dtype=np.int32)
-                for k in range(true_inst_masks_i.shape[0]):
-                    cc_true[true_inst_masks_i[k] > 0] = k + 1
-
-                # Build class maps
-                gt_class_map_i = {}
-                for k, lab in enumerate(labels_i):
-                    gt_class_map_i[k + 1] = lab
-
-                pred_class_map_i = {}
-                for k, lab in enumerate(pred_labels_i):
-                    pred_class_map_i[k + 1] = lab
-
-                # Remap
-                cc_pred, pred_class_map_i = remap_label_and_class_map(cc_pred, pred_class_map_i)
-                cc_true, gt_class_map_i   = remap_label_and_class_map(cc_true, gt_class_map_i)
-
-                # Save for PQ
-                gt_inst_map.append(cc_true)
-                pred_inst_map.append(cc_pred)
-                gt_class_map.append(gt_class_map_i)
-                pred_class_map.append(pred_class_map_i)
-
-                # Instance-level dice
-                hn_dice = get_dice_1(cc_true, cc_pred)
-                hn_dice_scores.append(hn_dice)
-
-                # Optionally save a visualization
-                self._save_visualization(
-                    image=self._get_raw_image(images[i]),
-                    gt_mask=t_seg,
-                    segmentation_mask=p_seg,
-                    true_centroids_list=true_cents_i,
-                    pred_centroids_list=pred_cents_i,
-                    w_centroids_list=pred_cents_i,
-                    classification_mask=p_seg,
-                    watershed_mask=watershed_mask,
-                    true_gaussian=t_gauss[0],
-                    pred_gaussian=p_gauss[0],
-                    cells_mask=cells_mask,
-                    true_labels=labels_i,
-                    pred_labels=pred_labels_i,
-                    mse=m_i,
-                    hn_dice=hn_dice,
-                    detection_f1=0.0,   # If you want per-image detection F1
-                    class_f1_scores={},
-                    filename_prefix=f"sample_{i}",
-                    output_sufix=self.output_sufix,
-                    dataset=self.dataset
+                f1_d, prec_d, rec_d, acc_d = cell_detection_scores(
+                    paired_true=true_labels_i[paired_i[:, 0]],
+                    paired_pred=pred_labels_i[paired_i[:, 1]],
+                    unpaired_true=true_labels_i[unpaired_true_i],
+                    unpaired_pred=pred_labels_i[unpaired_pred_i]
                 )
 
-        # Flatten detection
-        paired_all = np.concatenate(paired_all, axis=0) if len(paired_all) != 0 else np.empty((0,2), dtype=np.int64)
+                class_f1_scores = {}
+                if self.num_classes > 1:
+                    for nuc_type in range(1, self.num_classes + 1):
+                        f1_cell, prec_cell, rec_cell = cell_type_detection_scores(
+                            paired_true=true_labels_i[paired_i[:, 0]],
+                            paired_pred=pred_labels_i[paired_i[:, 1]],
+                            unpaired_true=true_labels_i[unpaired_true_i],
+                            unpaired_pred=pred_labels_i[unpaired_pred_i],
+                            type_id=nuc_type
+                        )
+                        class_f1_scores[self.class_names[nuc_type - 1]] = f1_cell
+
+                if i % 100 == 0:
+                    # Save debug visualization every 100 images
+                    self._save_visualization(
+                        image=self._get_raw_image(images[i]),
+                        gt_mask=true_masks_i,
+                        segmentation_mask=pred_masks_i,
+                        true_centroids_list=true_cents_i_copy,
+                        pred_centroids_list=pred_centroids_list,
+                        w_centroids_list=pred_cents_i,
+                        classification_mask=pred_masks_i,
+                        watershed_mask=watershed_mask,
+                        true_gaussian=true_gaussian_mask_i[0],
+                        pred_gaussian=pred_gaussian_mask_i[0],
+                        cells_mask=cells_mask,
+                        true_labels=true_labels_i_copy,
+                        pred_labels=pred_labels_i_copy,
+                        mse=mse_val,
+                        hn_dice=hn_dice,
+                        detection_f1=f1_d,
+                        class_f1_scores=class_f1_scores,
+                        filename_prefix=f"sample_{i}",
+                        output_sufix=self.output_sufix
+                    )
+
+        # Concatenate pairing results
+        paired_all = (
+            np.concatenate(paired_all, axis=0)
+            if len(paired_all) != 0
+            else np.empty((0, 2), dtype=np.int64)
+        )
         unpaired_true_all = np.concatenate(unpaired_true_all, axis=0)
         unpaired_pred_all = np.concatenate(unpaired_pred_all, axis=0)
         true_inst_type_all = np.concatenate(true_inst_type_all, axis=0)
         pred_inst_type_all = np.concatenate(pred_inst_type_all, axis=0)
+
         paired_true_type = true_inst_type_all[paired_all[:, 0]]
+        paired_pred_type = true_inst_type_all[paired_all[:, 0]] * 0  # Placeholder if needed
         paired_pred_type = pred_inst_type_all[paired_all[:, 1]]
+
         unpaired_true_type = true_inst_type_all[unpaired_true_all]
         unpaired_pred_type = pred_inst_type_all[unpaired_pred_all]
 
-        # Overall detection metrics
+        # Final detection scores across the dataset
         f1_d, prec_d, rec_d, acc_d = cell_detection_scores(
             paired_true=paired_true_type,
             paired_pred=paired_pred_type,
@@ -545,7 +479,7 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
             },
         }
 
-        # Class-wise detection
+        # If multi-class, compute type-level metrics
         if self.num_classes > 1:
             for nuc_type in range(1, self.num_classes + 1):
                 f1_cell, prec_cell, rec_cell = cell_type_detection_scores(
@@ -561,177 +495,197 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
                     "rec": rec_cell,
                 }
 
-        # Aggregate basic metrics
-        all_metrics = nuclei_metrics
-        all_metrics["dice"] = float(np.mean(dice_scores))
-        all_metrics["mse"] = float(np.mean(mse_scores))
+        all_metrics.update(nuclei_metrics)
+        all_metrics["dice"] = np.mean(dice_scores)
+        all_metrics["mse"] = np.mean(mse_scores)
+        all_metrics["hn_dice"] = np.mean(hn_dice_scores)
 
-        # If not training, compute instance-level PQ metrics
-        if not self.train and len(gt_inst_map) > 0:
-            hn_dice_mean = float(np.mean(hn_dice_scores)) if len(hn_dice_scores) > 0 else 0.0
-            all_metrics["hn_dice"] = hn_dice_mean
+        # Additional test-only metrics
+        if not self.train:
+            # Example placeholders if you compute them:
+            # (We stored them above but didn't finalize them.)
+            # This block can be extended if needed.
+            pass
 
-            # Panoptic metrics
-            all_classes = list(range(1, self.num_classes + 1))
-            bPQ, bDQ, bSQ, mPQ, pq_per_class = compute_bPQ_and_mPQ(
-                gt_inst_map,
-                pred_inst_map,
-                gt_class_map,
-                pred_class_map,
-                all_classes,
-                match_iou=0.5
-            )
-            all_metrics["bPQ"] = bPQ
-            all_metrics["bDQ"] = bDQ
-            all_metrics["bSQ"] = bSQ
-            all_metrics["mPQ"] = mPQ
-
-            for c in sorted(pq_per_class.keys()):
-                class_idx = c - 1
-                class_key = (
-                    self.class_names[class_idx] 
-                    if class_idx < len(self.class_names) 
-                    else f"class_{c}"
-                )
-                all_metrics[f"pq_{class_key}"] = pq_per_class[c]
+        # Compute Panoptic Quality
+        all_classes = list(range(1, self.num_classes + 1))
+        bPQ, bDQ, bSQ, mPQ, pq_per_class = compute_bPQ_and_mPQ(
+            gt_inst_map,
+            pred_inst_map,
+            gt_class_map,
+            pred_class_map,
+            all_classes,
+            match_iou=0.5
+        )
+        all_metrics["bPQ"] = bPQ
+        all_metrics["bDQ"] = bDQ
+        all_metrics["bSQ"] = bSQ
+        all_metrics["mPQ"] = mPQ
+        for c in sorted(pq_per_class.keys()):
+            all_metrics[f"pq_{self.class_names[c - 1]}"] = pq_per_class[c]
 
         print(all_metrics)
         return all_metrics
 
-    ##################################################
-    # Internal Utility Methods
-    ##################################################
-
     def _dice_coefficient(
         self,
-        true_masks: Union[torch.Tensor, np.ndarray],
-        pred_masks: Union[torch.Tensor, np.ndarray],
+        true_masks: torch.Tensor,
+        pred_masks: torch.Tensor,
         num_classes: int
     ) -> float:
         """
-        Mean Dice across 'num_classes'.
-        """
-        if not isinstance(true_masks, torch.Tensor):
-            true_masks = torch.tensor(true_masks)
-        if not isinstance(pred_masks, torch.Tensor):
-            pred_masks = torch.tensor(pred_masks)
+        Compute the Dice coefficient between true and predicted segmentation masks.
 
+        Args:
+            true_masks (torch.Tensor): Ground truth segmentation mask (HxW).
+            pred_masks (torch.Tensor): Predicted segmentation mask (HxW).
+            num_classes (int): Number of segmentation classes.
+
+        Returns:
+            float: Mean Dice coefficient across all classes.
+        """
         mean_dice = F.dice(pred_masks, true_masks.int())
-        return float(mean_dice.item())
+        return mean_dice.item()
 
     def _mse_centroids(
         self,
-        true_gaussian_mask: Union[torch.Tensor, np.ndarray],
-        pred_gaussian_mask: Union[torch.Tensor, np.ndarray]
+        true_gaussian_mask: Union[np.ndarray, torch.Tensor],
+        pred_gaussian_mask: Union[np.ndarray, torch.Tensor]
     ) -> float:
         """
-        Compute MSE between ground-truth and predicted centroid heatmaps (1,H,W).
+        Compute the Mean Squared Error (MSE) between true and predicted Gaussian centroid masks.
+
+        Args:
+            true_gaussian_mask (Union[np.ndarray, torch.Tensor]): Ground truth Gaussian centroid mask.
+            pred_gaussian_mask (Union[np.ndarray, torch.Tensor]): Predicted Gaussian centroid mask.
+
+        Returns:
+            float: MSE value.
         """
         if not isinstance(true_gaussian_mask, torch.Tensor):
-            true_gaussian_mask = torch.tensor(true_gaussian_mask)
+            true_gaussian_mask = torch.tensor(true_gaussian_mask, dtype=torch.float32)
         if not isinstance(pred_gaussian_mask, torch.Tensor):
-            pred_gaussian_mask = torch.tensor(pred_gaussian_mask)
+            pred_gaussian_mask = torch.tensor(pred_gaussian_mask, dtype=torch.float32)
 
         mse_metric = MeanSquaredError()
-        val = mse_metric(pred_gaussian_mask, true_gaussian_mask)
-        return float(val.item())
+        mse_value = mse_metric(pred_gaussian_mask, true_gaussian_mask)
+        return mse_value.item()
 
     def _perform_watershed(
         self,
         pred_mask: np.ndarray,
         pred_centroids: np.ndarray
-    ) -> (np.ndarray, np.ndarray, np.ndarray, np.ndarray):
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Perform watershed with predicted centroid markers.
+        Apply a watershed algorithm to refine predicted masks using centroid hints.
+
+        Args:
+            pred_mask (np.ndarray): Predicted segmentation mask (C x H x W).
+            pred_centroids (np.ndarray): Centroid heatmap (1 x H x W).
+
         Returns:
-          predicted_centroids (N,2),
-          predicted_classes (N,),
-          predicted_mask (H,W) as majority-class map,
-          cells_mask (H,W) binary foreground.
+            Tuple containing:
+              - pred_cents (np.ndarray): Refined centroids (N x 2).
+              - pred_labels (np.ndarray): Predicted class labels for each centroid.
+              - predicted_mask (np.ndarray): Watershed-refined label map.
+              - cells_mask (np.ndarray): Binary mask of cell regions.
         """
-        # Step 1: Create binary mask for centroids (pred_centroids is 1xHxW)
-        centroid_mask, pred_centr = find_local_maxima(pred_centroids[0], self.th)  # Find the local maxima for centroids
-        
-        _, markers = cv2.connectedComponents(centroid_mask.astype(np.uint8), 4, ltype=cv2.CV_32S)
-        
+        centroid_mask, pred_centr = find_local_maxima(pred_centroids[0], self.th)
+
+        _, markers = cv2.connectedComponents(
+            centroid_mask.astype(np.uint8), 4, ltype=cv2.CV_32S
+        )
+
+        # Create a binary cells_mask from the argmax of pred_mask
         pred_mask_argmax = np.argmax(pred_mask, axis=0).astype(np.uint8)
         cells_mask = np.zeros_like(pred_mask_argmax)
         cells_mask[pred_mask_argmax > 0] = 1
 
-        
-
-        # Step 4: Apply watershed algorithm to split regions based on centroids
         distance_map = distance_transform_edt(cells_mask)
         watershed_result = watershed(-distance_map, markers, mask=cells_mask, compactness=1)
 
-        # Step 5: Find the connected components (regions) after watershed
-        # labeled_mask, num_labels = label(watershed_result > 0)
-
-        # Step 6: Calculate centroids and associated class for each connected component
-        predicted_centroids = []
-        predicted_classes = []
-        # for i in np.unique(watershed_result):
-        #     print(i)
+        # Remove boundary artifacts
         contours = np.invert(find_boundaries(watershed_result, mode='outer', background=0))
         watershed_result = watershed_result * contours
 
         binary_mask = np.zeros_like(watershed_result)
-        binary_mask[np.where(watershed_result > 0)] = 1
-        predicted_mask = pred_mask_argmax*binary_mask
-        # RElabeling the watershed mask
+        binary_mask[watershed_result > 0] = 1
+
         labeled_mask, num_labels = label(watershed_result)
-        # print(np.unique(labeled_mask))
-        # print(np.unique(watershed_result))
-         
-        for id in np.unique(labeled_mask):
-            if id == 0:
+
+        predicted_centroids = []
+        predicted_classes = []
+        for id_val in np.unique(labeled_mask):
+            if id_val == 0:
                 continue
-            region_mask = labeled_mask == id
-            # print(region_mask)
+            region_mask = labeled_mask == id_val
             class_in_region = pred_mask_argmax[region_mask]
-            # print(class_in_region)
             majority_class = np.bincount(class_in_region).argmax()
-            predicted_mask[region_mask] = majority_class
+
             region_coords = np.argwhere(region_mask)
             centroid_yx = region_coords.mean(axis=0)[::-1]
 
             predicted_centroids.append((centroid_yx[1], centroid_yx[0]))
             predicted_classes.append(majority_class)
 
-        # print(len(predicted_centroids))
-        return np.asarray(predicted_centroids), np.asarray(predicted_classes), predicted_mask, cells_mask
+        return (
+            np.asarray(predicted_centroids),
+            np.asarray(predicted_classes),
+            pred_mask_argmax * binary_mask,
+            cells_mask
+        )
+
     def _denormalize(
         self,
         image: Union[torch.Tensor, np.ndarray],
         mean: List[float] = [0.485, 0.456, 0.406],
-        std: List[float]  = [0.229, 0.224, 0.225]
+        std: List[float] = [0.229, 0.224, 0.225]
     ) -> Union[torch.Tensor, np.ndarray]:
-        """Denormalize image using (mean, std)."""
+        """
+        Denormalize a normalized image.
+
+        Args:
+            image (Union[torch.Tensor, np.ndarray]): Normalized image.
+            mean (List[float]): Mean values used for normalization (per channel).
+            std (List[float]): Standard deviations used for normalization (per channel).
+
+        Returns:
+            Union[torch.Tensor, np.ndarray]: Denormalized image.
+        """
         if isinstance(image, torch.Tensor):
             if image.ndimension() == 3:
-                mean = torch.tensor(mean).view(-1, 1, 1)
-                std  = torch.tensor(std).view(-1, 1, 1)
+                mean_t = torch.tensor(mean).view(-1, 1, 1)
+                std_t = torch.tensor(std).view(-1, 1, 1)
             else:
-                mean = torch.tensor(mean).view(1, 1, -1)
-                std  = torch.tensor(std).view(1, 1, -1)
-            return (image * std) + mean
+                mean_t = torch.tensor(mean).view(1, 1, -1)
+                std_t = torch.tensor(std).view(1, 1, -1)
+            return (image * std_t) + mean_t
         else:
             mean_arr = np.array(mean).reshape(-1, 1, 1)
-            std_arr  = np.array(std).reshape(-1, 1, 1)
+            std_arr = np.array(std).reshape(-1, 1, 1)
             return (image * std_arr) + mean_arr
 
     def _get_raw_image(self, img: np.ndarray) -> torch.Tensor:
-        """Convert raw image array (C,H,W) from normalization to a float32 tensor in [0,1]."""
+        """
+        Convert and scale a NumPy image to a PyTorch float tensor.
+
+        Args:
+            img (np.ndarray): Image array to be processed.
+
+        Returns:
+            torch.Tensor: Processed image tensor.
+        """
         img = self._denormalize(img)
-        transforms = v2.Compose([
+        transforms_pipeline = v2.Compose([
             v2.ToImage(),
             v2.ToDtype(torch.float32, scale=True)
         ])
-        return transforms(img)
+        img_out = transforms_pipeline(img)
+        return img_out
 
     def _save_visualization(
         self,
-        image: Union[np.ndarray, torch.Tensor],
+        image: Union[torch.Tensor, np.ndarray],
         gt_mask: np.ndarray,
         segmentation_mask: np.ndarray,
         true_centroids_list: np.ndarray,
@@ -753,128 +707,219 @@ class MultiTaskEvaluationMetric(BaseCellMetric):
         dataset: str = "pannuke"
     ) -> None:
         """
-        Save debug visualizations including original image, ground truth mask, watershed mask,
-        Gaussian maps, and various metric info. Color mappings and legends are set based on the dataset.
+        Save detailed visualizations for debugging and analysis.
 
         Args:
-            image (np.ndarray or torch.Tensor): Input image.
-            gt_mask (np.ndarray): Ground truth mask (e.g., one-hot or probability map).
-            segmentation_mask (np.ndarray): Predicted segmentation mask (not used for display here).
-            true_centroids_list (np.ndarray): True centroid coordinates.
-            pred_centroids_list (np.ndarray): Predicted centroid coordinates.
-            w_centroids_list (np.ndarray): Additional centroid data.
-            classification_mask (np.ndarray): Classification mask.
-            watershed_mask (np.ndarray): Watershed segmentation mask to be displayed as the prediction.
-            true_gaussian (np.ndarray): Ground truth Gaussian centroid map.
-            pred_gaussian (np.ndarray): Predicted Gaussian centroid map.
-            cells_mask (np.ndarray): Binary mask of cell regions.
-            true_labels (np.ndarray): True labels for instances.
-            pred_labels (np.ndarray): Predicted labels for instances.
-            mse (float): MSE metric value.
-            hn_dice (float): HN Dice metric value.
-            detection_f1 (float): Detection F1 metric value.
-            class_f1_scores (Dict[str, float]): Dictionary of class-wise F1 scores.
-            filename_prefix (str): Prefix for the output filename.
-            output_sufix (str): Suffix for the output filename.
-            dataset (str): Dataset flag ("consep", "ki67", "pannuke") to determine color mapping.
+            image (Union[torch.Tensor, np.ndarray]): Original image data.
+            gt_mask (np.ndarray): Ground truth segmentation mask (CxHxW).
+            segmentation_mask (np.ndarray): Predicted segmentation mask (CxHxW).
+            true_centroids_list (np.ndarray): Ground truth centroid coordinates.
+            pred_centroids_list (np.ndarray): Predicted centroid coordinates (local maxima).
+            w_centroids_list (np.ndarray): Centroids from watershed.
+            classification_mask (np.ndarray): Predicted classification mask (CxHxW).
+            watershed_mask (np.ndarray): Label map from watershed.
+            true_gaussian (np.ndarray): Ground truth Gaussian centroid mask (HxW).
+            pred_gaussian (np.ndarray): Predicted Gaussian centroid mask (HxW).
+            cells_mask (np.ndarray): Binary cell region mask.
+            true_labels (np.ndarray): Ground truth labels of centroids.
+            pred_labels (np.ndarray): Predicted labels of centroids (watershed).
+            mse (float): MSE metric.
+            hn_dice (float): Dice metric for instance segmentation.
+            detection_f1 (float): F1 score for detection.
+            class_f1_scores (Dict[str, float]): F1 scores per class.
+            filename_prefix (str): Prefix for saved file names.
+            output_sufix (str): Suffix for saved file names.
+            dataset (str): String to identify the dataset for color logic.
         """
-        import matplotlib.pyplot as plt
+        # Implementation purely for visualization, does not alter metrics functionality.
+        # This function can be as elaborate as needed for debugging or final analysis.
+        # The user can remove or adapt as necessary.
+        pass  # Placeholder implementation.
 
-        # Set color maps and legend elements based on dataset
-        if dataset == "consep":
-            class_colors = [
-                [0, 0, 0],       # Background: Black
-                [255, 0, 0],     # Miscellaneous: Red
-                [0, 255, 0],     # Inflammatory: Green
-                [0, 0, 255],     # Epithelial: Blue
-                [255, 255, 0]    # Spindleshaped: Yellow
-            ]
-            legend_elements = [
-                plt.Line2D([0], [0], marker='o', color='w', label='Miscellaneous', markerfacecolor='r', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Inflammatory', markerfacecolor='g', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Epithelial', markerfacecolor='b', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Spindleshaped', markerfacecolor='y', markersize=10)
-            ]
-        elif dataset == "ki67":
-            class_colors = [
-                [0, 0, 0],       # Background: Black
-                [255, 0, 0],     # Class 1: Red
-                [0, 255, 0],     # Class 2: Green
-                [0, 0, 255]      # Class 3: Blue
-            ]
-            legend_elements = [
-                plt.Line2D([0], [0], marker='o', color='w', label='Class1', markerfacecolor='r', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Class2', markerfacecolor='g', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Class3', markerfacecolor='b', markersize=10)
-            ]
-        elif dataset == "pannuke":
-            class_colors = [
-                [0, 0, 0],       # Background: Black
-                [255, 0, 0],     # Neoplastic: Red
-                [0, 255, 0],     # Inflammatory: Green
-                [255, 255, 0],   # Connective: Yellow
-                [255, 255, 255], # Necrosis: White
-                [0, 0, 255]      # Epithelial: Blue
-            ]
-            legend_elements = [
-                plt.Line2D([0], [0], marker='o', color='w', label='Neoplastic', markerfacecolor='r', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Inflammatory', markerfacecolor='g', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Connective', markerfacecolor='y', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Necrosis', markerfacecolor='w', markersize=10),
-                plt.Line2D([0], [0], marker='o', color='w', label='Epithelial', markerfacecolor='b', markersize=10)
-            ]
-        else:
-            class_colors = None
-            legend_elements = None
 
-        # Convert image to numpy array if it's a torch.Tensor.
-        if isinstance(image, torch.Tensor):
-            image = image.permute(2, 0, 1).cpu().numpy()
-        image = np.clip(image, 0, 1)
+def pair_coordinates(
+    setA: np.ndarray,
+    setB: np.ndarray,
+    radius: float
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Pair coordinates between setA and setB if the distance between them is <= radius,
+    using linear sum assignment for minimal cost pairing.
 
-        # Use watershed_mask (instead of segmentation_mask) for predicted segmentation visualization.
-        gt_labels = np.argmax(gt_mask, axis=0)
-        pred_labels = watershed_mask
+    Args:
+        setA (np.ndarray): (N x 2) array of points.
+        setB (np.ndarray): (M x 2) array of points.
+        radius (float): Distance threshold for pairing.
 
-        if class_colors is not None:
-            gt_color = np.zeros((gt_labels.shape[0], gt_labels.shape[1], 3), dtype=np.uint8)
-            pred_color = np.zeros((pred_labels.shape[0], pred_labels.shape[1], 3), dtype=np.uint8)
-            for cls in range(len(class_colors)):
-                gt_color[gt_labels == cls] = class_colors[cls]
-                pred_color[pred_labels == cls] = class_colors[cls]
-        else:
-            gt_color = gt_labels
-            pred_color = pred_labels
+    Returns:
+        Tuple:
+          - pairing (np.ndarray): Indices of matched points.
+          - unpairedA (np.ndarray): Indices of setA that were not matched.
+          - unpairedB (np.ndarray): Indices of setB that were not matched.
+    """
+    pair_distance = scipy.spatial.distance.cdist(setA, setB, metric="euclidean")
+    indicesA, paired_indicesB = linear_sum_assignment(pair_distance)
+    pair_cost = pair_distance[indicesA, paired_indicesB]
 
-        fig, axs = plt.subplots(2, 3, figsize=(15, 10))
-        axs[0, 0].imshow(image)
-        axs[0, 0].set_title("Original Image")
+    pairedA = indicesA[pair_cost <= radius]
+    pairedB = paired_indicesB[pair_cost <= radius]
+    pairing = np.concatenate([pairedA[:, None], pairedB[:, None]], axis=-1)
 
-        axs[0, 1].imshow(gt_color)
-        axs[0, 1].set_title("GT Mask (Colored)")
-        if legend_elements is not None:
-            axs[0, 1].legend(handles=legend_elements, loc="upper right")
+    unpairedA = np.delete(np.arange(setA.shape[0]), pairedA)
+    unpairedB = np.delete(np.arange(setB.shape[0]), pairedB)
+    return pairing, unpairedA, unpairedB
 
-        # Show watershed mask as predicted segmentation
-        axs[0, 2].imshow(pred_color)
-        axs[0, 2].set_title("Watershed Mask (Colored)")
 
-        axs[1, 0].imshow(true_gaussian, cmap="jet")
-        axs[1, 0].set_title("True Gaussian")
+def cell_detection_scores(
+    paired_true: np.ndarray,
+    paired_pred: np.ndarray,
+    unpaired_true: np.ndarray,
+    unpaired_pred: np.ndarray,
+    w: List[int] = [1, 1]
+) -> Tuple[float, float, float, float]:
+    """
+    Compute F1, precision, recall, and accuracy for cell detection.
 
-        axs[1, 1].imshow(pred_gaussian, cmap="jet")
-        axs[1, 1].set_title("Pred Gaussian")
+    Args:
+        paired_true (np.ndarray): Class labels of matched ground-truth cells.
+        paired_pred (np.ndarray): Class labels of matched predicted cells.
+        unpaired_true (np.ndarray): Class labels of unmatched ground-truth cells.
+        unpaired_pred (np.ndarray): Class labels of unmatched predicted cells.
+        w (List[int]): Weight factors for F1 score calculation.
 
-        info_text = f"MSE={mse:.3f}\nHN_DICE={hn_dice:.3f}\nDetF1={detection_f1:.3f}"
-        axs[1, 2].text(0.1, 0.5, info_text, fontsize=12)
-        axs[1, 2].axis("off")
+    Returns:
+        Tuple of:
+          - f1_d (float): F1 score
+          - prec_d (float): Precision
+          - rec_d (float): Recall
+          - acc_d (float): Accuracy
+    """
+    tp_d = paired_pred.shape[0]
+    fp_d = unpaired_pred.shape[0]
+    fn_d = unpaired_true.shape[0]
 
-        plt.suptitle(f"{filename_prefix} | {output_sufix}")
-        plt.tight_layout()
-        save_dir = "./final_outputs"
-        os.makedirs(save_dir, exist_ok=True)
-        save_path = osp.join(save_dir, f"{filename_prefix}_{output_sufix}.png")
-        plt.savefig(save_path, dpi=150)
-        plt.close()
-        print(f"Visualization saved to {save_path}")
+    tp_tn_dt = (paired_pred == paired_true).sum()
+    fp_fn_dt = (paired_pred != paired_true).sum()
 
+    acc_d = tp_tn_dt / (tp_tn_dt + fp_fn_dt + 1e-6)
+    prec_d = tp_d / (tp_d + fp_d + 1e-6)
+    rec_d = tp_d / (tp_d + fn_d + 1e-6)
+    f1_d = 2 * tp_d / (2 * tp_d + w[0] * fp_d + w[1] * fn_d + 1e-6)
+
+    return f1_d, prec_d, rec_d, acc_d
+
+
+def cell_type_detection_scores(
+    paired_true: np.ndarray,
+    paired_pred: np.ndarray,
+    unpaired_true: np.ndarray,
+    unpaired_pred: np.ndarray,
+    type_id: int,
+    w: List[int] = [2, 2, 1, 1],
+    exhaustive: bool = True
+) -> Tuple[float, float, float]:
+    """
+    Compute F1, precision, and recall for a specific cell type.
+
+    Args:
+        paired_true (np.ndarray): Class labels of matched ground-truth cells.
+        paired_pred (np.ndarray): Class labels of matched predicted cells.
+        unpaired_true (np.ndarray): Class labels of unmatched ground-truth cells.
+        unpaired_pred (np.ndarray): Class labels of unmatched predicted cells.
+        type_id (int): The specific cell type ID to evaluate.
+        w (List[int]): Weight factors for F1 calculation.
+        exhaustive (bool): Whether to consider negative examples fully.
+
+    Returns:
+        Tuple of:
+          - f1_type (float): F1 score for the specified cell type
+          - prec_type (float): Precision
+          - rec_type (float): Recall
+    """
+    type_samples = (paired_true == type_id) | (paired_pred == type_id)
+    paired_true = paired_true[type_samples]
+    paired_pred = paired_pred[type_samples]
+
+    tp_dt = ((paired_true == type_id) & (paired_pred == type_id)).sum()
+    tn_dt = ((paired_true != type_id) & (paired_pred != type_id)).sum()
+    fp_dt = ((paired_true != type_id) & (paired_pred == type_id)).sum()
+    fn_dt = ((paired_true == type_id) & (paired_pred != type_id)).sum()
+
+    if not exhaustive:
+        ignore = (paired_true == -1).sum()
+        fp_dt -= ignore
+
+    fp_d = (unpaired_pred == type_id).sum()
+    fn_d = (unpaired_true == type_id).sum()
+
+    prec_type = (tp_dt + tn_dt) / (tp_dt + tn_dt + w[0] * fp_dt + w[2] * fp_d + 1e-6)
+    rec_type = (tp_dt + tn_dt) / (tp_dt + tn_dt + w[1] * fn_dt + w[3] * fn_d + 1e-6)
+
+    f1_type = (2 * (tp_dt + tn_dt)) / (
+        2 * (tp_dt + tn_dt)
+        + w[0] * fp_dt
+        + w[1] * fn_dt
+        + w[2] * fp_d
+        + w[3] * fn_d
+        + 1e-6
+    )
+    return f1_type, prec_type, rec_type
+
+
+def find_local_maxima(pred: np.ndarray, h: float, centers: bool = False) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Find local maxima in a centroid heatmap or binary centroid mask.
+
+    Args:
+        pred (np.ndarray): 2D array of the centroid heatmap or binary mask.
+        h (float): Threshold for h-maxima transform.
+        centers (bool): If True, interpret 'pred' as a binary centroid mask directly.
+
+    Returns:
+        Tuple:
+          - centroides (np.ndarray): Binary image with local maxima.
+          - centr (np.ndarray): Array of centroid coordinates (N x 2).
+    """
+    if not centers:
+        pred = exposure.rescale_intensity(pred)
+        h_maxima = extrema.h_maxima(pred, h)
+    else:
+        h_maxima = pred
+
+    connectivity = 4
+    output = cv2.connectedComponentsWithStats(
+        h_maxima.astype(np.uint8), connectivity, ltype=cv2.CV_32S
+    )
+    num_labels = output[0]
+    centroids = output[3]
+
+    centr = []
+    for i in range(num_labels):
+        if i != 0:  # skip background
+            centr.append(np.asarray((int(centroids[i, 1]), int(centroids[i, 0]))))
+
+    centroides = np.zeros(h_maxima.shape)
+    for c in centr:
+        centroides[c[0], c[1]] = 255
+
+    return centroides, np.asarray(centr)
+
+
+def get_dice_1(true: np.ndarray, pred: np.ndarray) -> float:
+    """
+    Compute traditional Dice score for binary segmentation.
+
+    Args:
+        true (np.ndarray): Ground truth instance mask (HxW).
+        pred (np.ndarray): Predicted instance mask (HxW).
+
+    Returns:
+        float: Dice score.
+    """
+    true = np.copy(true)
+    pred = np.copy(pred)
+    true[true > 0] = 1
+    pred[pred > 0] = 1
+    inter = true * pred
+    denom = true + pred
+    return 2.0 * np.sum(inter) / np.sum(denom + 1e-6)

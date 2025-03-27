@@ -1,62 +1,66 @@
 import copy
 import numpy as np
+import torch
+import torch.nn as nn
+import torchvision.transforms.v2 as v2
+import torchvision.transforms.v2.functional as F
 
 from skimage import color
 from scipy.ndimage import gaussian_filter
-
-import torch
-import torch.nn as nn
-import torchvision
-import torchvision.transforms.v2 as v2
-from torchvision.transforms.v2 import functional as F
-from torchvision.transforms.v2._utils import _get_fill, _setup_fill_arg
-from typing import List, Dict, Any, Union, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 
 def build_transforms(cfg: Dict[str, Any], split: str, is_train: bool = True) -> v2.Compose:
     """
-    Build a composed set of transforms based on the given configuration.
+    Build a sequence of image and target transformations based on the configuration.
 
     Args:
-        cfg (dict): Configuration containing transform specs under cfg['transforms'].
-        split (str): Data split identifier (e.g., "train", "test").
-        is_train (bool): If True, includes augmentation transforms.
+        cfg (Dict[str, Any]): Configuration dictionary containing transform parameters.
+        split (str): The dataset split, e.g., 'train', 'val', 'test'.
+        is_train (bool): Whether the transformations are for training or not.
 
     Returns:
-        v2.Compose: A composed transform that can be applied to (image, target) pairs.
+        v2.Compose: A composed torchvision v2 transformation that processes both image and target.
     """
     transforms = [v2.ToImage()]
 
+    # Augmentation transforms for training
     if is_train:
         transforms.append(build_augmentations(cfg))
 
+    # Convert image to float32 and scale from [0,255] to [0,1]
     transforms.append(v2.ToDtype(torch.float32, scale=True))
 
-    if "rescale" in cfg["transforms"]:
+    # Optional rescaling
+    if 'rescale' in cfg['transforms']:
         transforms.append(
             Rescale(
-                cfg["transforms"]["rescale"],
+                cfg['transforms']['rescale'],
                 antialias=True,
-                interpolation=v2.InterpolationMode.BICUBIC,
+                interpolation=v2.InterpolationMode.BICUBIC
             )
         )
-    if "normalize" in cfg["transforms"]:
-        mean = cfg["transforms"]["normalize"]["mean"]
-        std = cfg["transforms"]["normalize"]["std"]
+
+    # Optional image normalization
+    if 'normalize' in cfg['transforms']:
+        mean = cfg['transforms']['normalize']['mean']
+        std = cfg['transforms']['normalize']['std']
         transforms.append(v2.Normalize(mean=mean, std=std))
 
-    transforms.append(GaussianCentroidMask(sigma=cfg["training"]["sigma"]))
+    # Append GaussianCentroidMask transform
+    transforms.append(GaussianCentroidMask(sigma=cfg['training']['sigma']))
 
-    if split == "test":
+    # Depending on split, choose which segmentation mask transform to apply
+    if split == 'test':
         transforms.append(
             SegmentationMaskTensorWithBackground_masks(
-                num_classes=cfg["dataset"][split]["num_classes"]
+                num_classes=cfg['dataset'][split]['num_classes']
             )
         )
     else:
         transforms.append(
             SegmentationMaskTensorWithBackground(
-                num_classes=cfg["dataset"][split]["num_classes"]
+                num_classes=cfg['dataset'][split]['num_classes']
             )
         )
 
@@ -65,24 +69,27 @@ def build_transforms(cfg: Dict[str, Any], split: str, is_train: bool = True) -> 
 
 def build_augmentations(cfg: Dict[str, Any]) -> v2.Compose:
     """
-    Build a composed transform of augmentations specified under cfg['transforms']['augmentations'].
+    Build a composed set of augmentations from the configuration.
 
     Args:
-        cfg (dict): Configuration dictionary with an "augmentations" list specifying each augmentation's name and params.
+        cfg (Dict[str, Any]): Configuration dictionary containing a 'transforms' key
+                              with an 'augmentations' list.
 
     Returns:
-        v2.Compose: A composed augmentation transform.
+        v2.Compose: A composed transform of specified augmentations.
     """
     augs = []
-    assert "augmentations" in cfg["transforms"], "Missing 'augmentations' in cfg['transforms']."
+    assert 'augmentations' in cfg['transforms'], "No augmentations found in config."
 
-    for aug in cfg["transforms"]["augmentations"]:
-        assert "name" in aug, "Each augmentation must have a 'name' key."
+    for aug in cfg['transforms']['augmentations']:
+        assert 'name' in aug, "Augmentation must have a 'name' key."
         transform = AugmentationFactory.build(
-            aug["name"], **{k: v for k, v in aug.items() if k not in ["name", "p"]}
+            aug['name'],
+            **{k: v for k, v in aug.items() if k not in ['name', 'p']}
         )
-        if "p" in aug:
-            transform = RandomApply([transform], p=aug["p"])
+        # If probability p is specified, wrap in RandomApply
+        if 'p' in aug:
+            transform = RandomApply([transform], p=aug['p'])
         augs.append(transform)
 
     return v2.Compose(augs)
@@ -90,20 +97,20 @@ def build_augmentations(cfg: Dict[str, Any]) -> v2.Compose:
 
 class AugmentationFactory:
     """
-    A simple factory to build augmentation transforms by name.
+    A simple factory for creating augmentation transforms from a name key.
     """
 
     @staticmethod
-    def build(name: str, **kwargs) -> nn.Module:
+    def build(name: str, **kwargs: Any) -> v2.Transform:
         """
-        Build a specified augmentation transform.
+        Build a transform instance based on the provided name.
 
         Args:
-            name (str): The name of the augmentation.
-            **kwargs: Additional parameters for the transform.
+            name (str): The transform's name (e.g., "hflip", "vflip", "rotate90").
+            **kwargs (Any): Additional arguments for the transform.
 
         Returns:
-            nn.Module: A TorchVision v2 transform or custom transform object.
+            v2.Transform: The corresponding transform.
         """
         if name == "hflip":
             return v2.RandomHorizontalFlip(p=1.0)
@@ -126,40 +133,59 @@ class AugmentationFactory:
         elif name == "hedjitter":
             return HEDJitter(**kwargs)
         else:
-            raise ValueError(f"Unknown augmentation name: {name}")
+            raise ValueError(f'Unknown augmentation: {name}')
 
 
 class RandomRotation90(v2.Transform):
     """
-    A transform that randomly rotates an image (and associated target data)
-    by one of [0, 90, -90, 180] degrees.
+    A transform that randomly rotates an image by 0, 90, -90, or 180 degrees.
     """
 
     def __init__(self) -> None:
         super().__init__()
-        self._fill = _setup_fill_arg(0)
+        self._fill = (0,)
 
-    def _get_params(self, flat_inputs) -> Dict[str, float]:
-        angles = torch.tensor([0, 90, -90, 180], dtype=torch.float32)
+    def make_params(self, flat_inputs: List[torch.Tensor]) -> Dict[str, float]:
+        """
+        Randomly pick one angle from [0, 90, -90, 180].
+
+        Args:
+            flat_inputs (List[torch.Tensor]): Flattened image inputs.
+
+        Returns:
+            Dict[str, float]: Dictionary containing the chosen angle.
+        """
+        angles = torch.tensor([0, 90, -90, 180])
         angle = angles[torch.randperm(4)[0]].item()
-        return {"angle": angle}
+        return dict(angle=angle)
 
-    def _transform(self, inpt, params):
-        fill = _get_fill(self._fill, type(inpt))
+    def transform(self, inpt: Any, params: Dict[str, float]) -> Any:
+        """
+        Apply the random rotation to the input.
+
+        Args:
+            inpt (Any): Image or target to transform.
+            params (Dict[str, float]): The parameters dict with the chosen angle.
+
+        Returns:
+            Any: Rotated image or transformed target.
+        """
+        fill = v2._utils._get_fill(self._fill, type(inpt))
         return self._call_kernel(
             F.rotate,
             inpt,
-            **params,
+            params['angle'],
             interpolation=v2.InterpolationMode.NEAREST,
             expand=False,
             center=None,
-            fill=fill,
+            fill=fill
         )
 
 
 class HEDJitter(nn.Module):
     """
-    A custom transform that applies random perturbations in the H&E color space (HED).
+    A custom color jitter transform that operates in HED space.
+    (Hematoxylin, Eosin, DAB color space).
     """
 
     def __init__(
@@ -167,6 +193,11 @@ class HEDJitter(nn.Module):
         alpha: Union[float, Tuple[float, float]] = (0.98, 1.02),
         beta: Union[float, Tuple[float, float]] = (-0.02, 0.02)
     ):
+        """
+        Args:
+            alpha (Union[float, Tuple[float, float]]): Multiplicative factor range for H&E channels.
+            beta (Union[float, Tuple[float, float]]): Additive factor range for H&E channels.
+        """
         super().__init__()
         if not isinstance(alpha, tuple):
             alpha = (1.0 - alpha, 1.0 + alpha)
@@ -175,209 +206,332 @@ class HEDJitter(nn.Module):
         self.alpha = alpha
         self.beta = beta
 
-    def forward(self, image: torch.Tensor, target: Dict[str, Any]):
-        alpha_H = float(torch.empty(1).uniform_(self.alpha[0], self.alpha[1]))
-        alpha_E = float(torch.empty(1).uniform_(self.alpha[0], self.alpha[1]))
-        beta_H = float(torch.empty(1).uniform_(self.beta[0], self.beta[1]))
-        beta_E = float(torch.empty(1).uniform_(self.beta[0], self.beta[1]))
+        self.rgb_from_hed = torch.tensor(
+            [[0.65, 0.70, 0.29],
+             [0.07, 0.99, 0.11],
+             [0.27, 0.57, 0.78]],
+            dtype=torch.float32,
+            requires_grad=False
+        )
+        self.hed_from_rgb = torch.inverse(self.rgb_from_hed)
+
+    def forward(
+        self,
+        image: torch.Tensor,
+        target: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """
+        Apply HED color jitter to the input image.
+
+        Args:
+            image (torch.Tensor): Image tensor in [C,H,W] format.
+            target (Dict[str, Any]): Target dict (not modified).
+
+        Returns:
+            Tuple[torch.Tensor, Dict[str, Any]]: The jittered image and the unmodified target.
+        """
+        alpha_H = torch.empty(1).uniform_(self.alpha[0], self.alpha[1]).item()
+        alpha_E = torch.empty(1).uniform_(self.alpha[0], self.alpha[1]).item()
+
+        beta_H = torch.empty(1).uniform_(self.beta[0], self.beta[1]).item()
+        beta_E = torch.empty(1).uniform_(self.beta[0], self.beta[1]).item()
 
         orig_dtype = image.dtype
         image = F.convert_image_dtype(image, torch.float32)
 
-        # Convert to numpy for skimage color conversion
-        img_np = image.permute(1, 2, 0).cpu().numpy()
+        # Convert to HED space
+        img_np = image.permute(1, 2, 0).numpy()
         img_hed = color.rgb2hed(img_np)
+
+        # Apply multiplicative/additive factors
         img_hed[..., 0] = img_hed[..., 0] * alpha_H + beta_H
         img_hed[..., 1] = img_hed[..., 1] * alpha_E + beta_E
-        # If D channel also needed, uncomment and apply alpha_D, beta_D
 
-        img_rgb = color.hed2rgb(img_hed)
-        image = torch.tensor(img_rgb).permute(2, 0, 1)
-        image = F.convert_image_dtype(image, orig_dtype)
+        # Convert back to RGB
+        image_rgb = torch.tensor(color.hed2rgb(img_hed)).permute(2, 0, 1)
+        image_rgb = F.convert_image_dtype(image_rgb, orig_dtype)
 
-        return image, target
+        return image_rgb, target
 
 
 class GaussianCentroidMask(nn.Module):
     """
-    Convert bounding boxes in the target into a Gaussian centroid mask.
+    A transform that creates a Gaussian mask based on the centroids of bounding boxes in the target.
     """
 
-    def __init__(self, sigma: float = 5.0):
+    def __init__(self, sigma: float = 5.0) -> None:
+        """
+        Args:
+            sigma (float): Standard deviation for the Gaussian filter.
+        """
         super().__init__()
         self.sigma = sigma
 
-    def forward(self, image: torch.Tensor, target: Dict[str, Any]):
+    def forward(
+        self,
+        image: torch.Tensor,
+        target: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """
-        Generate a Gaussian centroid mask from the bounding boxes in the target.
+        Generate a Gaussian centroid mask and add it to the target under 'centroid_gaussian'.
 
         Args:
-            image (torch.Tensor): Image tensor of shape (C, H, W).
-            target (dict): Target dictionary containing at least 'boxes'.
+            image (torch.Tensor): Image tensor in [C,H,W] format.
+            target (Dict[str, Any]): Target dict containing 'boxes' with bounding boxes.
 
         Returns:
-            (torch.Tensor, dict): The unmodified image and the updated target with 'centroid_gaussian'.
+            Tuple[torch.Tensor, Dict[str, Any]]: Unmodified image and updated target.
         """
         height, width = image.shape[-2], image.shape[-1]
-        gauss_mask, _ = self.generate_gaussian_masks(target["boxes"], height, width)
-        target["centroid_gaussian"] = gauss_mask
+        gaussian_mask, _ = self.generate_gaussian_masks(target['boxes'], height, width)
+        target['centroid_gaussian'] = gaussian_mask
         return image, target
 
     def generate_gaussian_masks(
-        self, 
-        boxes: torch.Tensor, 
-        height: int, 
+        self,
+        boxes: torch.Tensor,
+        height: int,
         width: int
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Generate Gaussian masks from bounding box centroids.
+        Convert bounding boxes to Gaussian masks centered at each box's centroid.
 
         Args:
-            boxes (torch.Tensor): (N, 4) bounding boxes [xmin, ymin, xmax, ymax].
+            boxes (torch.Tensor): Tensor of shape [N,4] with bounding boxes [xmin, ymin, xmax, ymax].
             height (int): Image height.
             width (int): Image width.
 
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: 
-                1) A (1, H, W) Gaussian mask over centroids.
-                2) A centroid mask (same shape) with 1 at centroid pixels.
+            Tuple[torch.Tensor, torch.Tensor]: The filtered Gaussian mask and the centroids mask.
         """
         mask = torch.zeros((1, height, width), dtype=torch.float32)
+
+        # Place a value of 1.0 at each bounding box centroid
         for box in boxes:
             centroid_x = ((box[2] - box[0]) / 2) + box[0]
             centroid_y = ((box[3] - box[1]) / 2) + box[1]
+
             centroid_x = min(max(centroid_x, 0), width - 1)
             centroid_y = min(max(centroid_y, 0), height - 1)
+
             mask[0, int(centroid_y), int(centroid_x)] += 1.0
 
         centroids_mask = mask.clone()
-        filtered_mask = gaussian_filter(mask.numpy(), sigma=self.sigma)
-        filtered_mask = torch.tensor(filtered_mask, dtype=torch.float32)
-        if filtered_mask.max() > 0:
-            filtered_mask /= filtered_mask.max()
+        mask = torch.tensor(
+            gaussian_filter(mask.numpy(), sigma=self.sigma),
+            dtype=torch.float32
+        )
+        if mask.max() > 0:
+            mask = mask / mask.max()
 
-        return filtered_mask, centroids_mask
+        return mask, centroids_mask
 
 
 class SegmentationMaskTensorWithBackground(nn.Module):
     """
-    Convert binary instance masks (one per object) into a multi-channel segmentation tensor,
-    including background as the first channel.
+    A transform that converts binary masks and labels into a segmentation mask
+    with an additional background channel (channel 0).
     """
 
-    def __init__(self, num_classes: int):
+    def __init__(self, num_classes: int) -> None:
+        """
+        Args:
+            num_classes (int): Number of classes (excluding background).
+        """
         super().__init__()
         self.num_classes = num_classes
 
-    def forward(self, image: torch.Tensor, target: Dict[str, Any]):
+    def forward(
+        self,
+        image: torch.Tensor,
+        target: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """
-        Build a (C+1, H, W) segmentation mask from `masks` and `labels`.
+        Build and attach the segmentation mask with background to the target.
 
         Args:
-            image (torch.Tensor): The input image.
-            target (dict): Target containing 'masks' (List of binary masks) and 'labels' (List of int class IDs).
+            image (torch.Tensor): Image tensor in [C,H,W] format.
+            target (Dict[str, Any]): Target dict containing 'masks' (binary masks) and 'labels' (class IDs).
 
         Returns:
-            Tuple[torch.Tensor, dict]: The unmodified image and the target with 'segmentation_mask' added.
+            Tuple[torch.Tensor, Dict[str, Any]]: Unmodified image and updated target.
         """
         height, width = image.shape[-2], image.shape[-1]
-        seg_mask = self.build_segmentation_tensor(target["masks"], target["labels"], height, width)
-        target["segmentation_mask"] = seg_mask
-        target.pop("masks", None)
+        segmentation_mask = self.build_segmentation_tensor(
+            target['masks'],
+            target['labels'],
+            height,
+            width
+        )
+        target['segmentation_mask'] = segmentation_mask
+        target.pop('masks', None)
         return image, target
 
     def build_segmentation_tensor(
-        self, 
-        masks: List[torch.Tensor], 
+        self,
+        masks: List[torch.Tensor],
         labels: List[int],
         height: int,
         width: int
     ) -> torch.Tensor:
         """
-        Create a multi-channel segmentation tensor with shape (C+1, H, W). 
-        The first channel is background.
+        Create a (num_classes+1) x H x W segmentation tensor,
+        with channel 0 as background.
 
         Args:
-            masks (list): List of binary masks (H, W).
-            labels (list): Corresponding class labels (1..num_classes).
+            masks (List[torch.Tensor]): A list of binary masks for each object.
+            labels (List[int]): Class labels for each object.
             height (int): Image height.
             width (int): Image width.
 
         Returns:
-            torch.Tensor: The segmentation tensor with shape (num_classes+1, H, W).
+            torch.Tensor: A segmentation mask tensor.
         """
-        seg_tensor = torch.zeros((self.num_classes + 1, height, width), dtype=torch.float32)
-        for i, label in enumerate(labels):
-            seg_tensor[label] += masks[i]
-        seg_tensor[0] = 1.0 - seg_tensor[1:].sum(dim=0).clamp(max=1.0)
-        return seg_tensor
+        segmentation_tensor = torch.zeros(
+            (self.num_classes + 1, height, width),
+            dtype=torch.float32
+        )
+
+        for mask, label in zip(masks, labels):
+            segmentation_tensor[label] += mask
+
+        # Background is defined as the complement of the sum of all class channels
+        segmentation_tensor[0] = 1.0 - segmentation_tensor[1:].sum(dim=0).clamp(max=1.0)
+        return segmentation_tensor
 
 
 class SegmentationMaskTensorWithBackground_masks(nn.Module):
     """
-    Similar to SegmentationMaskTensorWithBackground, but does not remove 'masks' from the target.
-    Useful if we need the original masks downstream.
+    A transform that converts binary masks and labels into a segmentation mask
+    with a background channel, but keeps 'masks' in the target (for test usage).
     """
 
-    def __init__(self, num_classes: int):
+    def __init__(self, num_classes: int) -> None:
+        """
+        Args:
+            num_classes (int): Number of classes (excluding background).
+        """
         super().__init__()
         self.num_classes = num_classes
 
-    def forward(self, image: torch.Tensor, target: Dict[str, Any]):
+    def forward(
+        self,
+        image: torch.Tensor,
+        target: Dict[str, Any]
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """
+        Build and attach the segmentation mask with background to the target,
+        preserving 'masks' in the target.
+
+        Args:
+            image (torch.Tensor): Image tensor in [C,H,W] format.
+            target (Dict[str, Any]): Target dict containing 'masks' (binary masks) and 'labels' (class IDs).
+
+        Returns:
+            Tuple[torch.Tensor, Dict[str, Any]]: Unmodified image and updated target.
+        """
         height, width = image.shape[-2], image.shape[-1]
-        seg_mask = self.build_segmentation_tensor(target["masks"], target["labels"], height, width)
-        target["segmentation_mask"] = seg_mask
+        segmentation_mask = self.build_segmentation_tensor(
+            target['masks'],
+            target['labels'],
+            height,
+            width
+        )
+        target['segmentation_mask'] = segmentation_mask
         return image, target
 
     def build_segmentation_tensor(
-        self, 
-        masks: List[torch.Tensor], 
+        self,
+        masks: List[torch.Tensor],
         labels: List[int],
         height: int,
         width: int
     ) -> torch.Tensor:
-        seg_tensor = torch.zeros((self.num_classes + 1, height, width), dtype=torch.float32)
-        for i, label in enumerate(labels):
-            seg_tensor[label] += masks[i]
-        seg_tensor[0] = 1.0 - seg_tensor[1:].sum(dim=0).clamp(max=1.0)
-        return seg_tensor
+        """
+        Create a (num_classes+1) x H x W segmentation tensor,
+        with channel 0 as background.
+
+        Args:
+            masks (List[torch.Tensor]): A list of binary masks for each object.
+            labels (List[int]): Class labels for each object.
+            height (int): Image height.
+            width (int): Image width.
+
+        Returns:
+            torch.Tensor: A segmentation mask tensor.
+        """
+        segmentation_tensor = torch.zeros(
+            (self.num_classes + 1, height, width),
+            dtype=torch.float32
+        )
+
+        for mask, label in zip(masks, labels):
+            segmentation_tensor[label] += mask
+
+        segmentation_tensor[0] = 1.0 - segmentation_tensor[1:].sum(dim=0).clamp(max=1.0)
+        return segmentation_tensor
 
 
 class RandomApply(v2.Transform):
     """
-    Randomly apply a sequence of transforms with probability p.
+    A transform that randomly applies a list of transforms with probability p.
     """
 
-    def __init__(self, transforms: List[nn.Module], p: float = 0.5) -> None:
+    def __init__(
+        self,
+        transforms: List[v2.Transform],
+        p: float = 0.5
+    ) -> None:
+        """
+        Args:
+            transforms (List[v2.Transform]): A list of transforms to potentially apply.
+            p (float): Probability of applying the transforms.
+        """
         super().__init__()
         if not isinstance(transforms, (list, nn.ModuleList)):
-            raise TypeError("Argument transforms should be a list or nn.ModuleList of callables.")
-        self.transforms = transforms
+            raise TypeError(
+                "Argument transforms should be a sequence of callables or a `nn.ModuleList`"
+            )
         if not (0.0 <= p <= 1.0):
-            raise ValueError("`p` must be in the interval [0.0, 1.0].")
+            raise ValueError("`p` should be a float in the interval [0.0, 1.0].")
+
+        self.transforms = transforms
         self.p = p
 
-    def _extract_params_for_v1_transform(self):
+    def _extract_params_for_v1_transform(self) -> Dict[str, Any]:
         return {"transforms": self.transforms, "p": self.p}
 
-    def forward(self, *inputs):
+    def forward(self, *inputs: Any) -> Any:
+        """
+        Apply the stored transforms with probability p.
+
+        Args:
+            *inputs (Any): The image and optionally the target.
+
+        Returns:
+            Any: The transformed inputs if applied, else the original.
+        """
         needs_unpacking = len(inputs) > 1
+
         if torch.rand(1) >= self.p:
             return inputs if needs_unpacking else inputs[0]
 
-        for tform in self.transforms:
-            outputs = tform(*inputs)
-            inputs = outputs if needs_unpacking else (outputs,)
+        outputs = inputs
+        for transform in self.transforms:
+            outputs = transform(*outputs) if needs_unpacking else (transform(outputs),)
         return outputs
 
     def extra_repr(self) -> str:
-        lines = [f"    {t}" for t in self.transforms]
-        return "\n".join(lines)
+        format_string = []
+        for t in self.transforms:
+            format_string.append(f"    {t}")
+        return "\n".join(format_string)
 
 
 class Rescale(v2.Transform):
     """
-    Rescales the image (and potentially the target) by a factor, with optional max_size constraint.
+    A transform that rescales the shorter side of an image by a given factor,
+    optionally capped by a max_size.
     """
 
     def __init__(
@@ -387,26 +541,51 @@ class Rescale(v2.Transform):
         interpolation: v2.InterpolationMode = v2.InterpolationMode.BILINEAR,
         antialias: bool = True
     ) -> None:
+        """
+        Args:
+            scale (float): Factor by which to rescale the smaller dimension of the image.
+            max_size (int, optional): Maximum possible size (on the smaller dimension).
+            interpolation (v2.InterpolationMode): Interpolation method.
+            antialias (bool): Use antialiasing if supported.
+        """
         super().__init__()
         self.scale = scale
         self.max_size = max_size
         self.interpolation = interpolation
         self.antialias = antialias
 
-    def _get_params(self, flat_inputs) -> Dict[str, int]:
-        # The first element is assumed to be the image
-        h, w = flat_inputs[0].shape[-2:]
-        size_val = int(self.scale * min(h, w))
-        if self.max_size is not None:
-            size_val = min(size_val, self.max_size)
-        return {"size": size_val}
+    def make_params(self, flat_inputs: List[torch.Tensor]) -> Dict[str, int]:
+        """
+        Determine the new size based on the scale factor and optional max_size.
 
-    def _transform(self, inpt: torch.Tensor, params: Dict[str, int]):
+        Args:
+            flat_inputs (List[torch.Tensor]): Flattened image inputs.
+
+        Returns:
+            Dict[str, int]: Dictionary with the 'size' key specifying the new size.
+        """
+        h, w = flat_inputs[0].shape[-2:]
+        sz = int(self.scale * min(h, w))
+        if self.max_size is not None:
+            sz = min(sz, self.max_size)
+        return dict(size=sz)
+
+    def transform(self, inpt: Any, params: Dict[str, int]) -> Any:
+        """
+        Perform the resizing transform.
+
+        Args:
+            inpt (Any): Image or target to transform.
+            params (Dict[str, int]): Dictionary containing the new 'size'.
+
+        Returns:
+            Any: Resized image or target.
+        """
         return self._call_kernel(
             F.resize,
             inpt,
-            params["size"],
+            params['size'],
             interpolation=self.interpolation,
             max_size=self.max_size,
-            antialias=self.antialias,
+            antialias=self.antialias
         )

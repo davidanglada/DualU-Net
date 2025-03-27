@@ -14,7 +14,7 @@ loader:
   train:
     shuffle: True
     batch_size: 4
-    num_workers: 1
+    num_workers: 4
     drop_last: False
   val:
     shuffle: False
@@ -26,10 +26,10 @@ optimizer:
   lr_base: 0.0002
   epochs: 100
   weight_decay: 0.0001
+  lr_drop_factor: 0.1
   lr_drop_steps:
     - 70
     - 90
-  lr_drop_factor: 0.1
   lr_auto_scale: True
 
 distributed: True
@@ -69,7 +69,7 @@ evaluation:
 
 experiment:
   wandb: True
-  project: "DualU-Net_uncert_loss"
+  project: "DualU-Net_repo"
   name: "resnext_consep" 
   wandb_group: "train"
   seed: 42

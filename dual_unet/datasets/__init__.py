@@ -1,171 +1,189 @@
-import numpy as np
+from typing import Any, Dict, Tuple, List
+
 import torch
+import numpy as np
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, DistributedSampler
-from torchvision import datasets
+from torchvision import datasets  # noqa: F401
 
 from .pannuke import build_pannuke_dataset
 from .consep import build_consep_dataset
 from .ki67 import build_ki67_dataset
-from ..utils.misc import nested_tensor_from_tensor_list
+from ..utils.misc import nested_tensor_from_tensor_list, seed_worker
 
 
-def build_dataset(cfg: dict, split: str = "train"):
+def build_dataset(cfg: Dict[str, Any], split: str = 'train') -> Any:
     """
-    Build a dataset according to the name specified in `cfg['dataset'][split]['name']`.
+    Build the dataset specified in the configuration for a given split.
 
     Args:
-        cfg (dict): Configuration dictionary containing dataset info.
-        split (str): Split to build ("train", "val", "test", etc.).
+        cfg (Dict[str, Any]): Configuration dictionary containing dataset information.
+        split (str): The dataset split ('train', 'val', 'test', etc.).
 
     Returns:
-        Dataset: An instance of a dataset object.
+        Any: The constructed dataset object.
     """
-    dataset_name = cfg["dataset"][split]["name"]
-    if dataset_name == "pannuke":
+    if cfg['dataset'][split]['name'] == 'pannuke':
         dataset = build_pannuke_dataset(cfg, split=split)
-    elif dataset_name == "consep":
+    elif cfg['dataset'][split]['name'] == 'consep':
         dataset = build_consep_dataset(cfg, split=split)
-    elif dataset_name == "ki67":
+    elif cfg['dataset'][split]['name'] == 'ki67':
         dataset = build_ki67_dataset(cfg, split=split)
     else:
-        raise ValueError(f"Unknown dataset: {dataset_name}")
+        raise ValueError(f"Unknown dataset: {cfg['dataset']['split']['name']}")
     return dataset
 
 
-def collate_fn(batch):
+def collate_fn(
+    batch: List[Tuple[torch.Tensor, Dict[str, Any]]]
+) -> Tuple[torch.Tensor, Tuple[Dict[str, Any], ...]]:
     """
-    Collate function for DataLoader.
-
-    Expects batch to be a list of (image, target) pairs. Returns a stack of images 
-    (assuming they have the same shape) and a list of targets.
+    Custom collate function for combining a list of samples into a batch.
 
     Args:
-        batch (List[Tuple[Tensor, Dict]]): A list of image-target pairs.
+        batch (List[Tuple[torch.Tensor, Dict[str, Any]]]): A batch of data, where each element
+            is a tuple (image_tensor, target_dict).
 
     Returns:
-        (Tensor, List[Dict]): Stacked images and list of targets.
+        Tuple[torch.Tensor, Tuple[Dict[str, Any], ...]]: A tuple containing a stacked
+        tensor of images and the corresponding tuple of target dictionaries.
     """
     images, targets = zip(*batch)
-    images = torch.stack(images)  # Convert list of images to a single tensor
+    images = torch.stack(images)  # Assumes all images are the same size
     return images, targets
 
 
 def build_loader(
-    cfg: dict, 
-    dataset, 
-    split: str = "train", 
-    collate_fn=collate_fn
-):
+    cfg: Dict[str, Any],
+    dataset: Any,
+    split: str = 'train',
+    collate_fn: Any = collate_fn
+) -> DataLoader:
     """
-    Build a DataLoader for the given dataset.
+    Build a DataLoader for the provided dataset and configuration.
 
     Args:
-        cfg (dict): Configuration dictionary with 'loader' and distribution info.
-        dataset: The dataset instance to load.
-        split (str): "train", "val", "test", etc.
-        collate_fn (callable): Function to collate a batch, default is collate_fn above.
+        cfg (Dict[str, Any]): Configuration dictionary containing loader settings.
+        dataset (Any): The dataset to load.
+        split (str): Which dataset split to load (e.g., 'train', 'val', 'test').
+        collate_fn (Callable): Collate function used to combine individual samples.
 
     Returns:
-        DataLoader: PyTorch DataLoader for the dataset.
+        DataLoader: A PyTorch DataLoader configured with the specified sampler, batch size,
+        and other loader settings.
     """
-    _loader_cfg = cfg["loader"][split]
-    sampler = None
+    _loader_cfg = cfg['loader'][split]
 
-    if cfg["distributed"]:
-        if split in ["train", "val", "infer"]:
+    # Create sampler
+    sampler = None
+    if cfg['distributed']:
+        if split in ['train', 'val', 'infer']:
+            print("Using DistributedSampler")
             sampler = DistributedSampler(
                 dataset,
-                shuffle=_loader_cfg["shuffle"],
-                num_replicas=cfg["world_size"],
-                rank=cfg["rank"],
+                shuffle=_loader_cfg['shuffle'],
+                num_replicas=cfg['world_size'],
+                rank=cfg['rank']
             )
         else:
             from .loader import DistributedSamplerNoDuplicate
             sampler = DistributedSamplerNoDuplicate(
                 dataset,
-                shuffle=_loader_cfg["shuffle"],
-                num_replicas=cfg["world_size"],
-                rank=cfg["rank"],
+                shuffle=_loader_cfg['shuffle'],
+                num_replicas=cfg['world_size'],
+                rank=cfg['rank']
             )
     else:
-        if _loader_cfg["shuffle"]:
-            sampler = RandomSampler(dataset)
-        else:
-            sampler = SequentialSampler(dataset)
+        sampler = RandomSampler(dataset) if _loader_cfg['shuffle'] else SequentialSampler(dataset)
+
+    g = torch.Generator()
+    g.manual_seed(42)
 
     loader = DataLoader(
         dataset,
         sampler=sampler,
-        batch_size=_loader_cfg["batch_size"],
-        num_workers=_loader_cfg["num_workers"],
-        drop_last=_loader_cfg["drop_last"],
-        collate_fn=collate_fn
+        batch_size=_loader_cfg['batch_size'],
+        num_workers=_loader_cfg['num_workers'],
+        drop_last=_loader_cfg['drop_last'],
+        collate_fn=collate_fn,
+        worker_init_fn=seed_worker,
+        generator=g
     )
-
     return loader
 
 
 def compute_class_weights_with_background(
-    dataset, 
-    num_classes: int, 
+    dataset: Any,
+    num_classes: int,
     background_importance_factor: float = 1.0
 ) -> torch.Tensor:
     """
-    Compute class weights (including background) with emphasis on the background.
+    Compute class weights that include the background as its own class, with an optional
+    emphasis on the background class.
+
+    This function calculates pixel-wise counts of each class (including background) across
+    the dataset segmentation masks and then computes weights inversely proportional to
+    those counts. The background class is multiplied by a specified factor to increase
+    its importance.
 
     Args:
-        dataset: Dataset (e.g., Consep) providing segmentation data.
-        num_classes (int): Number of classes (excluding background).
+        dataset (Any): The dataset containing images and segmentation masks.
+        num_classes (int): Number of cell classes (excluding background).
         background_importance_factor (float): Weight multiplier for the background class.
 
     Returns:
-        torch.Tensor: A 1D tensor of class weights, including background as the 0th index.
+        torch.Tensor: A 1D tensor of class weights for (background + num_classes).
     """
     total_classes = num_classes + 1
-    class_counts = np.zeros(total_classes, dtype=np.float64)
+    class_counts = np.zeros(total_classes)
 
+    # Count pixel occurrences for each class index
     for _, t in dataset:
-        mask = torch.argmax(t["segmentation_mask"], dim=0)
-        mask = mask.cpu().numpy() if isinstance(mask, torch.Tensor) else np.array(mask)
+        mask = torch.argmax(t['segmentation_mask'], dim=0)
+        mask = mask.numpy() if isinstance(mask, torch.Tensor) else np.array(mask)
         for i in range(total_classes):
             class_counts[i] += np.sum(mask == i)
 
+    # Compute initial weights (inverse of frequency)
     total_pixels = np.sum(class_counts)
     class_weights = total_pixels / (total_classes * class_counts + 1e-6)
 
-    # Emphasize background
+    # Apply background importance factor
     class_weights[0] *= background_importance_factor
 
-    # Normalize to sum to 1
+    # Normalize so that the weights sum to 1
     class_weights /= class_weights.sum()
 
     return torch.tensor(class_weights, dtype=torch.float32)
 
 
 def compute_class_weights_no_background(
-    dataset, 
-    num_classes: int, 
-    background_importance_factor: float = 1.0
+    dataset: Any,
+    num_classes: int,
+    background_importance_factor: float = 1.0  # Not used, but kept for signature consistency
 ) -> torch.Tensor:
     """
-    Compute class weights for a dataset that focuses on the labeled classes (no background mask).
+    Compute class weights for classes only (no separate background class).
+
+    This function calculates label occurrences for each class in the dataset and then
+    computes weights inversely proportional to those counts.
 
     Args:
-        dataset: Dataset providing segmentation or class label data.
-        num_classes (int): Number of actual classes.
-        background_importance_factor (float): Not used here, but kept for API consistency.
+        dataset (Any): The dataset containing images and label information.
+        num_classes (int): Number of cell classes (excluding background).
+        background_importance_factor (float): Unused parameter, kept for consistency.
 
     Returns:
-        torch.Tensor: A 1D tensor of class weights for the specified classes.
+        torch.Tensor: A 1D tensor of class weights for the given number of classes.
     """
-    class_counts = np.zeros(num_classes, dtype=np.float64)
+    class_counts = np.zeros(num_classes)
 
+    # Count how many times each label occurs
     for _, t in dataset:
-        for label in t["labels"]:
+        for label in t['labels']:
             class_counts[label - 1] += 1
 
-    total_count = np.sum(class_counts)
-    class_weights = total_count / (num_classes * class_counts + 1e-6)
-    class_weights /= class_weights.sum()
+    total_pixels = np.sum(class_counts)
+    class_weights = total_pixels / (num_classes * class_counts + 1e-6)
 
+    class_weights /= class_weights.sum()
     return torch.tensor(class_weights, dtype=torch.float32)

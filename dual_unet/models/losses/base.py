@@ -1,18 +1,21 @@
 import re
+import torch
 import torch.nn as nn
-from typing import Union, Tuple
+from typing import Union
+
 
 class BaseObject(nn.Module):
     """
-    Base class providing a flexible naming convention for PyTorch modules. 
-    If `_name` is unset, the class name is transformed to snake_case automatically.
+    A base class that inherits from `nn.Module` and provides a uniform way
+    to manage the name of the object. If no name is specified, it derives
+    one from the class name using a conversion from CamelCase to snake_case.
     """
 
     def __init__(self, name: str = None):
         """
         Args:
-            name (str, optional): A custom name for the object. 
-                                  If None, a snake_case version of the class name is used.
+            name (str, optional): Name for the object. If None, the name is derived
+                from the class name (e.g., "BaseObject" -> "base_object").
         """
         super().__init__()
         self._name = name
@@ -21,41 +24,43 @@ class BaseObject(nn.Module):
     def __name__(self) -> str:
         """
         Returns:
-            str: The object name. If `_name` is defined, returns that. 
-                 Otherwise, converts the class name to snake_case.
+            str: The designated name of the object. If not provided in the constructor,
+            a snake_case version of the class name is returned.
         """
         if self._name is None:
-            name = self.__class__.__name__
-            s1 = re.sub(r'(.)([A-Z][a-z]+)', r'\1_\2', name)
-            return re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
+            class_name = self.__class__.__name__
+            # Insert underscores between CamelCase words
+            s1 = re.sub(r"(.)([A-Z][a-z]+)", r"\1_\2", class_name)
+            return re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
         else:
             return self._name
 
 
 class Metric(BaseObject):
     """
-    Placeholder for metric-related functionality. 
-    Inherits naming behavior from BaseObject.
+    A base class for metrics, extending `BaseObject`.
+    Currently, this class does not add functionality beyond its parent.
     """
     pass
 
 
 class Loss(BaseObject):
     """
-    Base class for loss functions. Supports:
-      - Summation of two Loss objects via `+`
-      - Multiplying a Loss by a scalar via `*`
+    A base class for defining loss functions, extending `BaseObject`.
+    This class allows for composable arithmetic operations on losses:
+      - Summation of two Loss objects -> SumOfLosses
+      - Multiplying a Loss by a scalar -> MultipliedLoss
     """
 
     def __add__(self, other: "Loss") -> "Loss":
         """
-        Define the addition (sum) operation between two Losses.
+        Overload the + operator for summation of Loss objects.
 
         Args:
-            other (Loss): Another Loss object to sum.
+            other (Loss): Another Loss to be summed with this one.
 
         Returns:
-            SumOfLosses: A combined Loss that sums the two individual losses.
+            SumOfLosses: A composite Loss object representing the sum.
         """
         if isinstance(other, Loss):
             return SumOfLosses(self, other)
@@ -63,87 +68,139 @@ class Loss(BaseObject):
             raise ValueError("Loss should be inherited from `Loss` class")
 
     def __radd__(self, other: "Loss") -> "Loss":
-        """Enables reverse-add so that `loss1 + loss2` and `loss2 + loss1` behave consistently."""
+        """
+        Right-side add operator, to handle cases like 0 + loss.
+
+        Args:
+            other (Loss or numeric): The left operand.
+
+        Returns:
+            Loss: The resulting sum.
+        """
         return self.__add__(other)
 
     def __mul__(self, value: Union[int, float]) -> "Loss":
         """
-        Scale this Loss by a numeric factor.
+        Overload the * operator for scaling a Loss by a numeric value.
 
         Args:
-            value (int or float): The multiplier.
+            value (int or float): The scalar multiplier.
 
         Returns:
-            MultipliedLoss: A new Loss object scaled by `value`.
+            MultipliedLoss: A composite Loss object representing the scaled loss.
         """
         if isinstance(value, (int, float)):
             return MultipliedLoss(self, value)
         else:
-            raise ValueError("Loss should be multiplied by an int or float")
+            raise ValueError("Loss multiplier must be an integer or float.")
 
     def __rmul__(self, other: Union[int, float]) -> "Loss":
-        """Enables reverse-mul so that `2 * loss` and `loss * 2` behave consistently."""
+        """
+        Right-side multiply operator, for expressions like 2 * loss.
+
+        Args:
+            other (int or float): The scalar multiplier.
+
+        Returns:
+            Loss: The resulting scaled loss.
+        """
         return self.__mul__(other)
+
+    def forward(self, *inputs, **kwargs):
+        """
+        Compute the loss value. Must be overridden by subclasses.
+
+        Args:
+            *inputs: Arbitrary positional arguments.
+            **kwargs: Arbitrary keyword arguments.
+
+        Returns:
+            torch.Tensor: The computed loss value.
+        """
+        raise NotImplementedError("Subclasses must implement the forward() method.")
 
 
 class SumOfLosses(Loss):
     """
-    A composite loss representing the sum of two child losses.
+    A composite Loss that represents the sum of two individual losses.
     """
 
     def __init__(self, l1: Loss, l2: Loss):
         """
         Args:
-            l1 (Loss): The first loss in the sum.
-            l2 (Loss): The second loss in the sum.
+            l1 (Loss): The first loss function.
+            l2 (Loss): The second loss function.
         """
         name = f"{l1.__name__} + {l2.__name__}"
         super().__init__(name=name)
         self.l1 = l1
         self.l2 = l2
 
-    def __call__(self, *inputs) -> float:
+    def forward(self, *inputs, **kwargs) -> torch.Tensor:
         """
-        Invoke the combined loss.
+        Forward pass: sum the two sub-losses over the same inputs.
 
         Args:
-            inputs: Arbitrary positional arguments forwarded to both child losses.
+            *inputs: Arguments for the loss functions.
+            **kwargs: Additional keyword arguments (ignored here).
 
         Returns:
-            float: The sum of `l1(inputs) + l2(inputs)`.
+            torch.Tensor: The sum of the two loss values.
         """
-        return self.l1.forward(*inputs) + self.l2.forward(*inputs)
+        return self.l1.forward(*inputs, **kwargs) + self.l2.forward(*inputs, **kwargs)
 
 
 class MultipliedLoss(Loss):
     """
-    A composite loss representing a single child loss scaled by a numeric factor.
+    A composite Loss that represents the original loss multiplied by a scalar coefficient.
     """
 
     def __init__(self, loss: Loss, multiplier: float):
         """
         Args:
-            loss (Loss): The child loss to be scaled.
-            multiplier (float): Scale factor.
+            loss (Loss): The base loss function to be scaled.
+            multiplier (float): The scalar multiplier.
         """
-        # Resolve a readable name
+        # Generate a name for display/logging
         if "+" in loss.__name__:
             name = f"{multiplier} * ({loss.__name__})"
         else:
             name = f"{multiplier} * {loss.__name__}"
-
         super().__init__(name=name)
         self.loss = loss
         self.multiplier = multiplier
 
-    def __call__(self, *inputs) -> float:
+    def forward(self, *inputs, **kwargs) -> torch.Tensor:
         """
-        Invoke the scaled loss.
+        Forward pass: multiply the base loss output by self.multiplier.
 
         Args:
-            inputs: Arbitrary positional arguments forwarded to the child loss.
+            *inputs: Arguments for the base loss function.
+            **kwargs: Additional keyword arguments.
 
         Returns:
-            float: The scaled loss value.
+            torch.Tensor: The scaled loss value.
         """
-        return self.multiplier * self.loss.forward(*inputs)
+        return self.multiplier * self.loss.forward(*inputs, **kwargs)
+
+
+# Example for a WeightedLoss, if needed:
+#
+# class WeightedLoss(Loss):
+#     """
+#     A composite loss applying separate weights to each sub-loss.
+#     """
+# 
+#     def __init__(self, l1: Loss, l2: Loss, w1: float, w2: float):
+#         name = f"{w1}*{l1.__name__} + {w2}*{l2.__name__}"
+#         super().__init__(name=name)
+#         self.l1 = l1
+#         self.l2 = l2
+#         self.w1 = w1
+#         self.w2 = w2
+# 
+#     def forward(self, inputs1, inputs2):
+#         """
+#         You could define separate forward args if needed, or pass in *inputs and parse.
+#         """
+#         return self.w1 * self.l1.forward(inputs1) + self.w2 * self.l2.forward(inputs2)
