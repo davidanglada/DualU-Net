@@ -90,23 +90,14 @@ def train(cfg: dict):
     # Step 6: Compute or load class weights
     # We'll store them in `ce_weights`
     ce_weights_path = cfg['training'].get('ce_weights', 'ce_weights.npy')
-    loss_seg_type = cfg['training'].get('loss_seg', 'seg')
 
     if not osp.exists(ce_weights_path):
-        # We need to compute them
-        if loss_seg_type == 'seg':
-            # No background weighting
-            ce_weights = compute_class_weights_no_background(
-                train_dataset,
-                cfg['dataset']['train']['num_classes']
-            ).to(device)
-        else:
-            # Weighted with background
-            ce_weights = compute_class_weights_with_background(
-                train_dataset,
-                cfg['dataset']['train']['num_classes'],
-                background_importance_factor=10
-            ).to(device)
+        # Weighted with background
+        ce_weights = compute_class_weights_with_background(
+            train_dataset,
+            cfg['dataset']['train']['num_classes'],
+            background_importance_factor=10
+        ).to(device)
         np.save(ce_weights_path, ce_weights.cpu().numpy())
     else:
         # Load existing weights

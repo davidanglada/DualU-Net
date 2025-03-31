@@ -18,7 +18,7 @@ loader:
     drop_last: False
 
 optimizer:
-  lr: 0.0001
+  lr: 0.0002
   epochs: 100
   weight_decay: 0.0001
   max_norm: 0.1
@@ -61,8 +61,8 @@ evaluation:
 experiment:
   wandb: True
   project: "DualU-Net_repo"
-  name: "resnext_consep_def_epoch_99.pth" 
+  name: "consep-dice-combined-w-background10_epoch_100.pth" 
   wandb_group: "test"
   seed: 42
   output_dir: /mnt/work/users/david.anglada/dualunet/checkpoints/
-  output_name: "resnext_consep_def_epoch_99.pth"
+  output_name: "consep-dice-combined-w-background10_epoch_100.pth"

@@ -4,6 +4,7 @@ import sys
 
 import torch
 import torch.nn as nn
+import numpy as np
 
 # For logging or distributed setup
 import wandb
@@ -14,7 +15,7 @@ from dual_unet.utils.config import load_config
 from dual_unet.datasets import build_dataset, build_loader, compute_class_weights_with_background
 from dual_unet.models import build_model
 from dual_unet.engine import evaluate_test
-from dual_unet.models.losses import DualLoss, DualLoss_CE, DualLoss_w
+from dual_unet.models.losses import DualLoss_combined
 
 def test(cfg):
     """
@@ -60,6 +61,21 @@ def test(cfg):
     # 5) Build the model and criterion
     model = build_model(cfg)
     # Decide the loss function based on config
+
+    ce_weights_path = cfg['training'].get('ce_weights', 'ce_weights.npy')
+
+    if not osp.exists(ce_weights_path):
+        # Weighted with background
+        ce_weights = compute_class_weights_with_background(
+            train_dataset,
+            cfg['dataset']['train']['num_classes'],
+            background_importance_factor=10
+        ).to(device)
+        np.save(ce_weights_path, ce_weights.cpu().numpy())
+    else:
+        # Load existing weights
+        ce_weights = torch.tensor(np.load(ce_weights_path)).to(device)
+
     criterion = DualLoss_combined(
         ce_weights=ce_weights,
         weight_dice=cfg['training']['weight_dice'],
@@ -87,6 +103,7 @@ def test(cfg):
 
     # 8) Evaluate the model
     test_stats = evaluate_test(
+        cfg=cfg,
         model=model,
         criterion=criterion,
         data_loader=test_loader,

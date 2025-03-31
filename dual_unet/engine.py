@@ -216,6 +216,7 @@ def evaluate(
 
 @torch.no_grad()
 def evaluate_test(
+    cfg: dict,
     model: nn.Module,
     criterion: nn.Module,
     data_loader: Iterable,
@@ -250,14 +251,14 @@ def evaluate_test(
     header = "Test:"
 
     metrics = {
-        "f": MultiTaskEvaluationMetric_all(
+        'f': MultiTaskEvaluationMetric_all(
             num_classes=data_loader.dataset.num_classes,
             thresholds=thresholds,
             max_pair_distance=max_pair_distance,
             class_names=data_loader.dataset.class_names,
-            train=train,
-            th=th,
-            output_sufix=output_sufix
+            dataset=cfg['dataset']['test']['name'],
+            train=False,
+            th=th
         )
     }
 
