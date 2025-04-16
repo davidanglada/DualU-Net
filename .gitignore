@@ -167,3 +167,6 @@ final_inference/
 *.pth
 *.pt
 *.out
+
+# wandb
+wandb/
