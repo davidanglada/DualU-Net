@@ -126,14 +126,13 @@ python inference.py --config configs/config_inference.yaml
 If you find this work helpful in your research, please consider citing us:
 ```bash
    @inproceedings{
-      anglada-rotger2025dualunet,
+      anglada-rotger2025two,
       title={Two Heads Are Enough: DualU-Net, a Fast and Efficient Architecture for Nuclei Instance Segmentation},
       author={David Anglada-Rotger and Berta Jansat and Ferran Marques and Montse Pard{\`a}s},
-      booktitle={Submitted to Medical Imaging with Deep Learning},
+      booktitle={Medical Imaging with Deep Learning},
       year={2025},
-      url={https://openreview.net/forum?id=lK0CklgxQd},
-      note={under review}
-   }
+      url={https://openreview.net/forum?id=lK0CklgxQd}
+      }
 ```
 
 ## License
