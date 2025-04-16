@@ -110,10 +110,16 @@ Below are the basic commands to get you started with DualU-Net.
 python train.py --config configs/config_train.yaml
 ```
 
-### 3. Inference & Evaluation
+### 3. Evaluation
 
 ```bash
 python eval.py --config configs/config_eval.yaml
+```
+
+### 4. Inference
+
+```bash
+python inference.py --config configs/config_inference.yaml
 ```
 
 ## Citation
