@@ -67,8 +67,8 @@ def test(cfg):
     if not osp.exists(ce_weights_path):
         # Weighted with background
         ce_weights = compute_class_weights_with_background(
-            train_dataset,
-            cfg['dataset']['train']['num_classes'],
+            test_dataset,
+            cfg['dataset']['test']['num_classes'],
             background_importance_factor=10
         ).to(device)
         np.save(ce_weights_path, ce_weights.cpu().numpy())

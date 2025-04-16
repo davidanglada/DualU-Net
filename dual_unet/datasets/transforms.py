@@ -48,23 +48,27 @@ def build_transforms(cfg: Dict[str, Any], split: str, is_train: bool = True) -> 
         transforms.append(v2.Normalize(mean=mean, std=std))
 
     # Append GaussianCentroidMask transform
-    transforms.append(GaussianCentroidMask(sigma=cfg['training']['sigma']))
-
-    # Depending on split, choose which segmentation mask transform to apply
-    if split == 'test':
-        transforms.append(
-            SegmentationMaskTensorWithBackground_masks(
-                num_classes=cfg['dataset'][split]['num_classes']
-            )
-        )
+    if cfg['dataset'][split]['name'] == 'image_only':
+        return v2.Compose(transforms)
+    
     else:
-        transforms.append(
-            SegmentationMaskTensorWithBackground(
-                num_classes=cfg['dataset'][split]['num_classes']
-            )
-        )
+        transforms.append(GaussianCentroidMask(sigma=cfg['training']['sigma']))
 
-    return v2.Compose(transforms)
+        # Depending on split, choose which segmentation mask transform to apply
+        if split == 'test':
+            transforms.append(
+                SegmentationMaskTensorWithBackground_masks(
+                    num_classes=cfg['dataset'][split]['num_classes']
+                )
+            )
+        else:
+            transforms.append(
+                SegmentationMaskTensorWithBackground(
+                    num_classes=cfg['dataset'][split]['num_classes']
+                )
+            )
+
+        return v2.Compose(transforms)
 
 
 def build_augmentations(cfg: Dict[str, Any]) -> v2.Compose:

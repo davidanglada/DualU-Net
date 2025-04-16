@@ -161,6 +161,7 @@ cython_debug/
 
 final_outputs/
 final_outputs_2/
+final_inference/
 
 # torch
 *.pth

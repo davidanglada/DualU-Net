@@ -8,6 +8,7 @@ from torchvision import datasets  # noqa: F401
 from .pannuke import build_pannuke_dataset
 from .consep import build_consep_dataset
 from .ki67 import build_ki67_dataset
+from .image_only import build_imageonly_dataset
 from ..utils.misc import nested_tensor_from_tensor_list, seed_worker
 
 
@@ -28,6 +29,8 @@ def build_dataset(cfg: Dict[str, Any], split: str = 'train') -> Any:
         dataset = build_consep_dataset(cfg, split=split)
     elif cfg['dataset'][split]['name'] == 'ki67':
         dataset = build_ki67_dataset(cfg, split=split)
+    elif cfg['dataset'][split]['name'] == 'image_only':
+        dataset = build_imageonly_dataset(cfg, split=split)
     else:
         raise ValueError(f"Unknown dataset: {cfg['dataset']['split']['name']}")
     return dataset
@@ -50,6 +53,17 @@ def collate_fn(
     images, targets = zip(*batch)
     images = torch.stack(images)  # Assumes all images are the same size
     return images, targets
+
+def collate_fn_image_only(batch: List[torch.Tensor]) -> Tuple[torch.Tensor, None]:
+    """
+    Collate function for an image-only dataset where __getitem__ returns a single torch.Tensor.
+    
+    Each item in `batch` is just an image tensor; there is no target.
+    We stack the images into one tensor and return (images, None).
+    """
+    # `batch` is a list of image tensors, each shape [C, H, W]
+    images = torch.stack(batch, dim=0)  # shape: [B, C, H, W]
+    return images, None
 
 
 def build_loader(
@@ -98,16 +112,28 @@ def build_loader(
     g = torch.Generator()
     g.manual_seed(42)
 
-    loader = DataLoader(
-        dataset,
-        sampler=sampler,
-        batch_size=_loader_cfg['batch_size'],
-        num_workers=_loader_cfg['num_workers'],
-        drop_last=_loader_cfg['drop_last'],
-        collate_fn=collate_fn,
-        worker_init_fn=seed_worker,
-        generator=g
-    )
+    if cfg['dataset'][split]['name'] == 'image_only':
+        loader = DataLoader(
+            dataset,
+            sampler=sampler,
+            batch_size=_loader_cfg['batch_size'],
+            num_workers=_loader_cfg['num_workers'],
+            drop_last=_loader_cfg['drop_last'],
+            collate_fn=collate_fn_image_only,
+            worker_init_fn=seed_worker,
+            generator=g
+        )
+    else:
+        loader = DataLoader(
+            dataset,
+            sampler=sampler,
+            batch_size=_loader_cfg['batch_size'],
+            num_workers=_loader_cfg['num_workers'],
+            drop_last=_loader_cfg['drop_last'],
+            collate_fn=collate_fn,
+            worker_init_fn=seed_worker,
+            generator=g
+        )
     return loader
 
 

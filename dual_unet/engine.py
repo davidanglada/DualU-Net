@@ -292,3 +292,59 @@ def evaluate_test(
     metrics = {k: metrics[k].compute() for k in metrics}
 
     return metrics
+
+@torch.no_grad()
+def inference(
+    cfg: dict,
+    model: nn.Module,
+    data_loader: Iterable,
+    device: torch.device,
+    thresholds: List[float] = [0.5],
+    max_pair_distance: float = 12.0,
+    output_sufix: str = "",
+    train: bool = False,
+    th: float = 0.15
+) -> List[dict]:
+    """
+    Performs a forward pass over the dataset to generate predictions,
+    without computing any loss or metrics.
+
+    Args:
+        cfg (dict): Configuration dictionary (may or may not be needed here).
+        model (nn.Module): Trained model to run inference with.
+        data_loader (Iterable): Data loader supplying input samples.
+        device (torch.device): CPU or GPU device.
+        thresholds (List[float]): If you need thresholds for post-processing, specify them here.
+        max_pair_distance (float): If you need to set distance constraints, specify here (unused in pure inference).
+        output_sufix (str): Optional suffix for any output files/logs if needed.
+        train (bool): Unused here, but you can keep it for consistency with your workflow.
+        th (float): Another parameter that can be used in post-processing steps (unused here).
+
+    Returns:
+        List[dict]: A list of predictions, each containing (for example):
+            {
+                "segmentation_mask": ...,
+                "centroid_gaussian": ...,
+                "image": ...
+            }
+    """
+    model.eval()
+    predictions_list = []
+
+    for samples, _ in data_loader:
+        samples = samples.to(device)
+        outputs = model(samples)
+
+        # Example of packaging model outputs into a convenient format.
+        # Adjust to your actual model output structure.
+        batch_predictions = [
+            {
+                "segmentation_mask": torch.softmax(outputs[0][i], dim=0),
+                "centroid_gaussian": outputs[1][i],
+                "image": samples[i],
+            }
+            for i in range(len(outputs[0]))
+        ]
+        predictions_list.extend(batch_predictions)
+
+    return predictions_list
