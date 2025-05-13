@@ -2,7 +2,7 @@
 
 DualU-Net is a multi-task deep learning model for nuclei segmentation and classification. It employs a dual-decoder design that predicts both pixel-wise segmentation maps and Gaussian-based centroid density maps, enabling fast and accurate instance segmentation in histopathological images.
 
-[Read the MIDL25 (Under Review) paper](https://openreview.net/forum?id=lK0CklgxQd)
+[Read the MIDL25 paper (Oral Presentation)](https://openreview.net/forum?id=lK0CklgxQd)
 
 ![DualU-Net Architecture](docs/esquema_ex.jpg)
 
