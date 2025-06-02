@@ -136,6 +136,7 @@ If you find this work helpful in your research, please consider citing us:
 ```
 
 ## License
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](LICENSE)
 
-This project is licensed under the [MIT License](LICENSE).
+This project (all code and non-code assets) is released under the  
+[Creative Commons Attribution – NonCommercial 4.0 International License](LICENSE).
